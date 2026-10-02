@@ -433,6 +433,108 @@ class ApiGatewayV2DomainNameIntegrationTest {
             .statusCode(404);
     }
 
+    @Test
+    @Order(11)
+    void aRestApiCanBeMappedUnderAKeyWithSeveralLevels() {
+        // AWS takes a REST API here too: the v2 API is how a REST API gets a multi-level mapping.
+        String restApiId = given()
+                .contentType(ContentType.JSON)
+                .body("{\"name\":\"v2-mapped-rest-api\"}")
+            .when()
+                .post("/restapis")
+            .then()
+                .statusCode(201)
+                .extract().path("id");
+        given()
+            .contentType(ContentType.JSON)
+            .body("{\"stageName\":\"prod\"}")
+        .when()
+            .post("/restapis/" + restApiId + "/deployments")
+        .then()
+            .statusCode(201);
+        given()
+            .contentType(ContentType.JSON)
+            .body("""
+                    {"domainName":"rest-multi-level.example.com","domainNameConfigurations":[
+                        {"certificateArn":"arn:aws:acm:us-east-1:000000000000:certificate/abc","endpointType":"REGIONAL"}]}
+                    """)
+        .when()
+            .post("/v2/domainnames")
+        .then()
+            .statusCode(201);
+
+        given()
+            .contentType(ContentType.JSON)
+            .body("{\"apiId\":\"%s\",\"stage\":\"prod\",\"apiMappingKey\":\"orders/v1/items\"}".formatted(restApiId))
+        .when()
+            .post("/v2/domainnames/rest-multi-level.example.com/apimappings")
+        .then()
+            .statusCode(201)
+            .body("apiId", is(restApiId))
+            .body("apiMappingKey", is("orders/v1/items"));
+    }
+
+    @Test
+    @Order(12)
+    void anEdgeDomainCannotBeManagedThroughTheV2Api() {
+        String message = "Only REGIONAL domain names can be managed through the API Gateway V2 API. For EDGE "
+                + "domain names, please use the API Gateway V1 API. Also note that only REST APIs can be attached "
+                + "to EDGE domain names.";
+        given()
+            .contentType(ContentType.JSON)
+            .body("""
+                    {"domainName":"edge-only.example.com",
+                     "certificateArn":"arn:aws:acm:us-east-1:000000000000:certificate/abc",
+                     "endpointConfiguration":{"types":["EDGE"]}}
+                    """)
+        .when()
+            .post("/domainnames")
+        .then()
+            .statusCode(201);
+
+        given()
+        .when()
+            .get("/v2/domainnames/edge-only.example.com/apimappings")
+        .then()
+            .statusCode(400)
+            .body("message", is(message));
+        given()
+            .contentType(ContentType.JSON)
+            .body("""
+                    {"domainName":"edge-v2.example.com","domainNameConfigurations":[{"endpointType":"EDGE"}]}
+                    """)
+        .when()
+            .post("/v2/domainnames")
+        .then()
+            .statusCode(400)
+            .body("message", is(message));
+    }
+
+    @Test
+    @Order(13)
+    void anHttpApiIsMappedOnlyOntoADomainOnTls12() {
+        given()
+            .contentType(ContentType.JSON)
+            .body("""
+                    {"domainName":"tls10.example.com",
+                     "regionalCertificateArn":"arn:aws:acm:us-east-1:000000000000:certificate/abc",
+                     "endpointConfiguration":{"types":["REGIONAL"]},"securityPolicy":"TLS_1_0"}
+                    """)
+        .when()
+            .post("/domainnames")
+        .then()
+            .statusCode(201);
+
+        given()
+            .contentType(ContentType.JSON)
+            .body("{\"apiId\":\"%s\",\"stage\":\"$default\"}".formatted(apiId))
+        .when()
+            .post("/v2/domainnames/tls10.example.com/apimappings")
+        .then()
+            .statusCode(400)
+            .body(containsString("TLS 1.2"));
+    }
+
     private static org.hamcrest.Matcher<Iterable<? super String>> hasItemEqualTo(String value) {
         return org.hamcrest.Matchers.hasItem(equalTo(value));
     }

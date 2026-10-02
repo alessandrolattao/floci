@@ -576,6 +576,24 @@ Routes carrying `authorizationType: AWS_IAM`: including those an OpenAPI import 
 | **VPC Links** | CreateVpcLink, GetVpcLink, GetVpcLinks, DeleteVpcLink |
 | **Tags** | TagResource, UntagResource, GetTags |
 
+### Custom Domain Names and API Mappings
+
+A custom domain created through either API is one record, routed by its `Host` header as
+described under [Custom Domain Names](#custom-domain-names); an API mapping sends the request to
+the mapped stage of an HTTP, WebSocket or REST API. A REST API can be mapped under a key with
+several levels, such as `orders/v1`, which only the v2 API creates.
+
+`CreateDomainName` takes exactly one domain name configuration and refuses mutual TLS, ownership
+verification certificates, an IP address type other than `ipv4` and a routing mode other than
+`API_MAPPING_ONLY`. As on AWS, the v2 API does not manage an edge-optimized domain, an HTTP API or a
+key with several levels needs a domain on the `TLS_1_2` security policy (so such a domain cannot
+leave it), a WebSocket API cannot share a domain with an HTTP or REST API, and a key holds only
+letters, digits and `$-_.+!*'()/`, at most 300 of them. A mapping keeps its `apiMappingId` when its
+key changes.
+
+Templates can create domains and mappings with `AWS::ApiGatewayV2::DomainName` and
+`AWS::ApiGatewayV2::ApiMapping`; see [CloudFormation](cloudformation.md).
+
 ### WebSocket Data-Plane {#websocket-data-plane}
 
 Floci supports real WebSocket connections for API Gateway v2 WebSocket APIs. Clients connect via:

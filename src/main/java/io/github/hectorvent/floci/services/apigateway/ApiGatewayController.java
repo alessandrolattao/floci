@@ -1626,7 +1626,7 @@ public class ApiGatewayController {
                 ? null
                 : String.valueOf(request.get("apiMappingKey"));
         StoredMapping created = service.createApiMapping(region, domainName, apiMappingKey, apiId, stage);
-        return Response.status(201).entity(toApiMappingNode(created.storedPath(), created.mapping()).toString())
+        return Response.status(201).entity(toApiMappingNode(created).toString())
                 .type(MediaType.APPLICATION_JSON).build();
     }
 
@@ -1636,8 +1636,7 @@ public class ApiGatewayController {
         String region = regionResolver.resolveRegion(headers);
         ObjectNode root = objectMapper.createObjectNode();
         ArrayNode items = root.putArray("items");
-        service.basePathMappingsByStoredPath(region, domainName)
-                .forEach((storedPath, mapping) -> items.add(toApiMappingNode(storedPath, mapping)));
+        service.getApiMappings(region, domainName).forEach(mapping -> items.add(toApiMappingNode(mapping)));
         return Response.ok(root.toString()).type(MediaType.APPLICATION_JSON).build();
     }
 
@@ -1648,7 +1647,7 @@ public class ApiGatewayController {
                                   @PathParam("apiMappingId") String apiMappingId) {
         String region = regionResolver.resolveRegion(headers);
         StoredMapping found = service.getApiMapping(region, domainName, apiMappingId);
-        return Response.ok(toApiMappingNode(found.storedPath(), found.mapping()).toString())
+        return Response.ok(toApiMappingNode(found).toString())
                 .type(MediaType.APPLICATION_JSON).build();
     }
 
@@ -2409,13 +2408,15 @@ public class ApiGatewayController {
         return node;
     }
 
-    private ObjectNode toApiMappingNode(String storedPath, BasePathMapping mapping) {
+    private ObjectNode toApiMappingNode(StoredMapping stored) {
+        String storedPath = stored.storedPath();
+        BasePathMapping mapping = stored.mapping();
         ObjectNode node = objectMapper.createObjectNode();
-        node.put("apiMappingId", ApiGatewayService.apiMappingId(storedPath));
+        node.put("apiMappingId", stored.apiMappingId());
         node.put("apiId", mapping.getRestApiId());
         node.put("stage", mapping.getStage());
         // v1 stores the root mapping as "(none)"; v2 expresses it as an empty key.
-        // The key reported is the one the record is stored under, so it matches its id.
+        // The key reported is the one the record is stored under, which is the path it routes on.
         String canonical = ApiGatewayService.canonicalBasePath(storedPath);
         node.put("apiMappingKey", "(none)".equals(canonical) ? "" : canonical);
         return node;
