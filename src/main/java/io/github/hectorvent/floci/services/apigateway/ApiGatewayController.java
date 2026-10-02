@@ -1,8 +1,6 @@
 package io.github.hectorvent.floci.services.apigateway;
 
 import java.io.IOException;
-import java.nio.charset.StandardCharsets;
-import java.util.HexFormat;
 import java.time.Instant;
 import java.util.ArrayList;
 import java.util.HashMap;
@@ -19,6 +17,7 @@ import com.fasterxml.jackson.databind.node.ObjectNode;
 import io.github.hectorvent.floci.core.common.AwsArnUtils;
 import io.github.hectorvent.floci.core.common.AwsException;
 import io.github.hectorvent.floci.core.common.RegionResolver;
+import io.github.hectorvent.floci.services.apigateway.ApiGatewayService.StoredMapping;
 import io.github.hectorvent.floci.services.apigateway.model.ApiGatewayResource;
 import io.github.hectorvent.floci.services.apigateway.model.ApiKey;
 import io.github.hectorvent.floci.services.apigateway.model.BasePathMapping;
@@ -1578,16 +1577,7 @@ public class ApiGatewayController {
     public Response createV2DomainName(@Context HttpHeaders headers, String body) {
         String region = regionResolver.resolveRegion(headers);
         Map<String, Object> request = readJsonBody(body);
-        // HTTP APIs require exactly one configuration, where the REST API takes none at all. It has
-        // to be an object: a scalar or a list there is still a body AWS would not have accepted.
-        if (!(request.get("domainNameConfigurations") instanceof List<?> configurations)
-                || configurations.size() != 1
-                || !(configurations.getFirst() instanceof Map<?, ?> configuration)) {
-            throw new AwsException("BadRequestException",
-                    "Invalid input. Expected one domain name configuration", 400);
-        }
-        rejectUnemulatedDomainInputs(request, configuration);
-        CustomDomain domain = service.createDomainName(region, toV1DomainRequest(request));
+        CustomDomain domain = service.createV2DomainName(region, request);
         return Response.status(201).entity(toV2DomainNode(region, domain).toString())
                 .type(MediaType.APPLICATION_JSON).build();
     }
@@ -1632,26 +1622,11 @@ public class ApiGatewayController {
         }
         String apiId = String.valueOf(request.get("apiId"));
         String stage = String.valueOf(request.get("stage"));
-        // A mapping to an API or stage that does not exist would route nowhere, so AWS refuses it
-        // rather than answering 201 with something unusable.
-        requireApiAndStageExist(region, apiId, stage);
-
-        String basePath = ApiGatewayService.canonicalBasePath(
-                request.get("apiMappingKey") == null ? null : String.valueOf(request.get("apiMappingKey")));
-        boolean keyTaken = service.basePathMappingsByStoredPath(region, domainName).keySet().stream()
-                .anyMatch(existing -> ApiGatewayService.canonicalBasePath(existing).equals(basePath));
-        if (keyTaken) {
-            throw new AwsException("ConflictException",
-                    "ApiMapping key already exists for this domain name", 409);
-        }
-
-        Map<String, Object> v1Request = new HashMap<>();
-        v1Request.put("restApiId", apiId);
-        v1Request.put("stage", stage);
-        v1Request.put("basePath", basePath);
-        BasePathMapping mapping = service.createBasePathMapping(region, domainName, v1Request,
-                v2Service.getApi(region, apiId).getProtocolType());
-        return Response.status(201).entity(toApiMappingNode(basePath, mapping).toString())
+        String apiMappingKey = request.get("apiMappingKey") == null
+                ? null
+                : String.valueOf(request.get("apiMappingKey"));
+        StoredMapping created = service.createApiMapping(region, domainName, apiMappingKey, apiId, stage);
+        return Response.status(201).entity(toApiMappingNode(created.storedPath(), created.mapping()).toString())
                 .type(MediaType.APPLICATION_JSON).build();
     }
 
@@ -1672,7 +1647,7 @@ public class ApiGatewayController {
                                   @PathParam("domainName") String domainName,
                                   @PathParam("apiMappingId") String apiMappingId) {
         String region = regionResolver.resolveRegion(headers);
-        StoredMapping found = findApiMapping(region, domainName, apiMappingId);
+        StoredMapping found = service.getApiMapping(region, domainName, apiMappingId);
         return Response.ok(toApiMappingNode(found.storedPath(), found.mapping()).toString())
                 .type(MediaType.APPLICATION_JSON).build();
     }
@@ -1683,10 +1658,7 @@ public class ApiGatewayController {
                                      @PathParam("domainName") String domainName,
                                      @PathParam("apiMappingId") String apiMappingId) {
         String region = regionResolver.resolveRegion(headers);
-        // Deleted by the path the selected record is stored under, so the record that answered the
-        // lookup is the record that goes.
-        StoredMapping found = findApiMapping(region, domainName, apiMappingId);
-        service.deleteBasePathMappingRecord(region, domainName, found.storedPath());
+        service.deleteApiMapping(region, domainName, apiMappingId);
         return Response.noContent().build();
     }
 
@@ -2406,54 +2378,6 @@ public class ApiGatewayController {
         }
     }
 
-    /**
-     * Refuses the parts of a domain that floci does not emulate, rather than accepting them and
-     * answering with a domain that behaves differently from the one that was asked for.
-     */
-    private static void rejectUnemulatedDomainInputs(Map<String, Object> request, Map<?, ?> configuration) {
-        Object routingMode = request.get("routingMode");
-        if (routingMode != null && !"API_MAPPING_ONLY".equals(routingMode)) {
-            throw new AwsException("BadRequestException",
-                    "Only API_MAPPING_ONLY routing is supported", 400);
-        }
-        if (request.get("mutualTlsAuthentication") != null) {
-            throw new AwsException("BadRequestException",
-                    "Mutual TLS authentication is not supported", 400);
-        }
-        Object ipAddressType = configuration.get("ipAddressType");
-        if (ipAddressType != null && !"ipv4".equals(ipAddressType)) {
-            throw new AwsException("BadRequestException",
-                    "Only the ipv4 address type is supported", 400);
-        }
-        if (configuration.get("ownershipVerificationCertificateArn") != null) {
-            throw new AwsException("BadRequestException",
-                    "Ownership verification certificates are not supported", 400);
-        }
-    }
-
-    /** Flattens the v2 request onto the keys the shared custom-domain store is written with. */
-    private Map<String, Object> toV1DomainRequest(Map<String, Object> request) {
-        Map<String, Object> v1Request = new HashMap<>();
-        v1Request.put("domainName", request.get("domainName"));
-        copyIfPresent(request, v1Request, "tags", "tags");
-        if (request.get("domainNameConfigurations") instanceof List<?> configurations
-                && !configurations.isEmpty()
-                && configurations.getFirst() instanceof Map<?, ?> configuration) {
-            copyIfPresent(configuration, v1Request, "certificateArn", "certificateArn");
-            copyIfPresent(configuration, v1Request, "certificateName", "certificateName");
-            copyIfPresent(configuration, v1Request, "endpointType", "endpointType");
-            copyIfPresent(configuration, v1Request, "securityPolicy", "securityPolicy");
-        }
-        return v1Request;
-    }
-
-    private static void copyIfPresent(Map<?, ?> source, Map<String, Object> target, String from, String to) {
-        Object value = source.get(from);
-        if (value != null) {
-            target.put(to, value);
-        }
-    }
-
     private ObjectNode toV2DomainNode(String region, CustomDomain d) {
         ObjectNode node = objectMapper.createObjectNode();
         node.put("domainName", d.getDomainName());
@@ -2487,7 +2411,7 @@ public class ApiGatewayController {
 
     private ObjectNode toApiMappingNode(String storedPath, BasePathMapping mapping) {
         ObjectNode node = objectMapper.createObjectNode();
-        node.put("apiMappingId", apiMappingId(storedPath));
+        node.put("apiMappingId", ApiGatewayService.apiMappingId(storedPath));
         node.put("apiId", mapping.getRestApiId());
         node.put("stage", mapping.getStage());
         // v1 stores the root mapping as "(none)"; v2 expresses it as an empty key.
@@ -2495,49 +2419,6 @@ public class ApiGatewayController {
         String canonical = ApiGatewayService.canonicalBasePath(storedPath);
         node.put("apiMappingKey", "(none)".equals(canonical) ? "" : canonical);
         return node;
-    }
-
-    /** Rejects a mapping whose API or stage does not exist, with the errors AWS gives for each. */
-    private void requireApiAndStageExist(String region, String apiId, String stage) {
-        try {
-            v2Service.getApi(region, apiId);
-        } catch (AwsException e) {
-            throw new AwsException("BadRequestException", "Invalid API identifier specified: " + apiId, 400);
-        }
-        try {
-            v2Service.getStage(region, apiId, stage);
-        } catch (AwsException e) {
-            throw new AwsException("BadRequestException", "Invalid stage identifier specified", 400);
-        }
-    }
-
-    /**
-     * Derives the mapping id from what identifies the mapping, so it survives a restart and is the
-     * same id whichever API created it. The base path is encoded rather than hashed: two base paths
-     * sharing a hash would share an id, and a read or delete by that id would pick between them.
-     */
-    // Package-private so the identity property can be tested against records that only persisted
-    // state can hold: no API path creates a non-canonical base path any more.
-    static String apiMappingId(String storedPath) {
-        // Encoded from the key the record is stored under — not its canonical form, and not the
-        // record's own field, which BasePathMapping normalises on construction. State written
-        // before writes were canonicalised can sit under "" or "/" beside "(none)", and reading
-        // identity from anywhere but the key hands several records one id for a read or a delete
-        // to choose between. The prefix keeps an empty stored path from producing an empty id.
-        return "m" + HexFormat.of().formatHex(
-                (storedPath == null ? "" : storedPath).getBytes(StandardCharsets.UTF_8));
-    }
-
-    /** A mapping together with the base path it is stored under, which is what identifies it. */
-    private record StoredMapping(String storedPath, BasePathMapping mapping) {}
-
-    private StoredMapping findApiMapping(String region, String domainName, String apiMappingId) {
-        return service.basePathMappingsByStoredPath(region, domainName).entrySet().stream()
-                .filter(entry -> apiMappingId(entry.getKey()).equals(apiMappingId))
-                .map(entry -> new StoredMapping(entry.getKey(), entry.getValue()))
-                .findFirst()
-                .orElseThrow(() -> new AwsException("NotFoundException",
-                        "Unable to find ApiMapping with ID " + apiMappingId, 404));
     }
 
     private ObjectNode toDomainNode(String region, CustomDomain d) {

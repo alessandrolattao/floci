@@ -41,6 +41,7 @@ import io.github.hectorvent.floci.services.apigateway.model.Stage;
 import io.github.hectorvent.floci.services.apigateway.model.UsagePlan;
 import io.github.hectorvent.floci.services.apigateway.model.UsagePlanKey;
 import io.github.hectorvent.floci.services.apigateway.model.VpcLink;
+import io.github.hectorvent.floci.services.apigatewayv2.ApiGatewayV2Service;
 import io.swagger.parser.OpenAPIParser;
 import io.swagger.v3.core.util.Json;
 import io.swagger.v3.oas.models.OpenAPI;
@@ -54,6 +55,7 @@ import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
 import org.jboss.logging.Logger;
 
+import java.nio.charset.StandardCharsets;
 import java.time.Instant;
 import java.time.LocalDate;
 import java.time.format.DateTimeParseException;
@@ -62,6 +64,7 @@ import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.HashMap;
 import java.util.HashSet;
+import java.util.HexFormat;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -116,6 +119,8 @@ public class ApiGatewayService implements ResourceProvider {
     private final TlsCertificateManager certificateManager;
     private final EmulatorConfig config;
     private final RegionResolver regionResolver;
+    /** The v2 APIs an API mapping can point at; a custom domain is shared by both APIs. */
+    private final ApiGatewayV2Service apiGatewayV2Service;
 
     // Constants
     private static final String EPC_KEY = "endpointConfiguration";
@@ -130,12 +135,20 @@ public class ApiGatewayService implements ResourceProvider {
                 new RegionResolver(config.defaultRegion(), config.defaultAccountId()));
     }
 
+    ApiGatewayService(StorageFactory storageFactory, EmulatorConfig config,
+                      TlsCertificateManager certificateManager, RegionResolver regionResolver) {
+        this(storageFactory, config, certificateManager, regionResolver,
+                new ApiGatewayV2Service(storageFactory, config, regionResolver));
+    }
+
     @Inject
     public ApiGatewayService(StorageFactory storageFactory, EmulatorConfig config,
-                             TlsCertificateManager certificateManager, RegionResolver regionResolver) {
+                             TlsCertificateManager certificateManager, RegionResolver regionResolver,
+                             ApiGatewayV2Service apiGatewayV2Service) {
         this.certificateManager = certificateManager;
         this.config = config;
         this.regionResolver = regionResolver;
+        this.apiGatewayV2Service = apiGatewayV2Service;
         this.apiStore = storageFactory.create("apigateway", "apigateway-apis.json",
                 new TypeReference<>() {
                 });
@@ -2336,6 +2349,147 @@ public class ApiGatewayService implements ResourceProvider {
         mapping.setStage(newStage);
         basePathMappingStore.put(mappingKey(region, domainName, normalizedPath), mapping);
         return mapping;
+    }
+
+    // ──────────────────────────── Custom Domains and API Mappings (v2) ────────────────────────────
+    //
+    // A custom domain is one resource in AWS, reachable through both APIs, so the v2 operations read
+    // and write the same records the v1 ones do. The rules live here rather than in the controller
+    // because CloudFormation's AWS::ApiGatewayV2 types go through them too.
+
+    /** {@code CreateDomainName} through the v2 API, from its request body. */
+    public CustomDomain createV2DomainName(String region, Map<String, Object> request) {
+        return createDomainName(region, toV1DomainRequest(request));
+    }
+
+    /**
+     * Flattens a v2 {@code CreateDomainName} body onto the keys the shared custom-domain store is
+     * written with, after refusing what floci does not emulate.
+     */
+    private static Map<String, Object> toV1DomainRequest(Map<String, Object> request) {
+        // HTTP APIs require exactly one configuration, where the REST API takes none at all. It has
+        // to be an object: a scalar or a list there is still a body AWS would not have accepted.
+        if (!(request.get("domainNameConfigurations") instanceof List<?> configurations)
+                || configurations.size() != 1
+                || !(configurations.getFirst() instanceof Map<?, ?> configuration)) {
+            throw new AwsException("BadRequestException",
+                    "Invalid input. Expected one domain name configuration", 400);
+        }
+        rejectUnemulatedDomainInputs(request, configuration);
+        Map<String, Object> v1Request = new HashMap<>();
+        v1Request.put("domainName", request.get("domainName"));
+        copyIfPresent(request, v1Request, "tags", "tags");
+        copyIfPresent(configuration, v1Request, "certificateArn", "certificateArn");
+        copyIfPresent(configuration, v1Request, "certificateName", "certificateName");
+        copyIfPresent(configuration, v1Request, "endpointType", "endpointType");
+        copyIfPresent(configuration, v1Request, "securityPolicy", "securityPolicy");
+        return v1Request;
+    }
+
+    /**
+     * Refuses the parts of a domain that floci does not emulate, rather than accepting them and
+     * answering with a domain that behaves differently from the one that was asked for.
+     */
+    private static void rejectUnemulatedDomainInputs(Map<String, Object> request, Map<?, ?> configuration) {
+        Object routingMode = request.get("routingMode");
+        if (routingMode != null && !"API_MAPPING_ONLY".equals(routingMode)) {
+            throw new AwsException("BadRequestException",
+                    "Only API_MAPPING_ONLY routing is supported", 400);
+        }
+        if (request.get("mutualTlsAuthentication") != null) {
+            throw new AwsException("BadRequestException",
+                    "Mutual TLS authentication is not supported", 400);
+        }
+        Object ipAddressType = configuration.get("ipAddressType");
+        if (ipAddressType != null && !"ipv4".equals(ipAddressType)) {
+            throw new AwsException("BadRequestException",
+                    "Only the ipv4 address type is supported", 400);
+        }
+        if (configuration.get("ownershipVerificationCertificateArn") != null) {
+            throw new AwsException("BadRequestException",
+                    "Ownership verification certificates are not supported", 400);
+        }
+    }
+
+    private static void copyIfPresent(Map<?, ?> source, Map<String, Object> target, String from, String to) {
+        Object value = source.get(from);
+        if (value != null) {
+            target.put(to, value);
+        }
+    }
+
+    /** A v2 API mapping: the base path mapping record, with the base path it is stored under. */
+    public record StoredMapping(String storedPath, BasePathMapping mapping) {}
+
+    /**
+     * Creates a v2 API mapping, stored as a base path mapping that remembers the type of API it
+     * routes to.
+     */
+    public StoredMapping createApiMapping(String region, String domainName, String apiMappingKey,
+                                          String apiId, String stage) {
+        // A mapping to an API or stage that does not exist would route nowhere, so AWS refuses it
+        // rather than answering 201 with something unusable.
+        String apiType = requireMappingTarget(region, apiId, stage);
+        String basePath = canonicalBasePath(apiMappingKey);
+        boolean keyTaken = basePathMappingsByStoredPath(region, domainName).keySet().stream()
+                .anyMatch(existing -> canonicalBasePath(existing).equals(basePath));
+        if (keyTaken) {
+            throw new AwsException("ConflictException",
+                    "ApiMapping key already exists for this domain name", 409);
+        }
+
+        Map<String, Object> v1Request = new HashMap<>();
+        v1Request.put("restApiId", apiId);
+        v1Request.put("stage", stage);
+        v1Request.put("basePath", basePath);
+        return new StoredMapping(basePath, createBasePathMapping(region, domainName, v1Request, apiType));
+    }
+
+    /** The protocol type of the API a mapping points at, refusing an API or stage that does not exist. */
+    private String requireMappingTarget(String region, String apiId, String stageName) {
+        String protocolType;
+        try {
+            protocolType = apiGatewayV2Service.getApi(region, apiId).getProtocolType();
+        } catch (AwsException e) {
+            throw new AwsException("BadRequestException", "Invalid API identifier specified: " + apiId, 400);
+        }
+        try {
+            apiGatewayV2Service.getStage(region, apiId, stageName);
+        } catch (AwsException e) {
+            throw new AwsException("BadRequestException", "Invalid stage identifier specified", 400);
+        }
+        return protocolType;
+    }
+
+    public StoredMapping getApiMapping(String region, String domainName, String apiMappingId) {
+        return basePathMappingsByStoredPath(region, domainName).entrySet().stream()
+                .filter(entry -> apiMappingId(entry.getKey()).equals(apiMappingId))
+                .map(entry -> new StoredMapping(entry.getKey(), entry.getValue()))
+                .findFirst()
+                .orElseThrow(() -> new AwsException("NotFoundException",
+                        "Unable to find ApiMapping with ID " + apiMappingId, 404));
+    }
+
+    public void deleteApiMapping(String region, String domainName, String apiMappingId) {
+        // Deleted by the path the selected record is stored under, so the record that answered the
+        // lookup is the record that goes.
+        StoredMapping found = getApiMapping(region, domainName, apiMappingId);
+        deleteBasePathMappingRecord(region, domainName, found.storedPath());
+    }
+
+    /**
+     * Derives the mapping id from what identifies the mapping, so it survives a restart and is the
+     * same id whichever API created it. The base path is encoded rather than hashed: two base paths
+     * sharing a hash would share an id, and a read or delete by that id would pick between them.
+     */
+    public static String apiMappingId(String storedPath) {
+        // Encoded from the key the record is stored under: not its canonical form, and not the
+        // record's own field, which BasePathMapping normalises on construction. State written
+        // before writes were canonicalised can sit under "" or "/" beside "(none)", and reading
+        // identity from anywhere but the key hands several records one id for a read or a delete
+        // to choose between. The prefix keeps an empty stored path from producing an empty id.
+        return "m" + HexFormat.of().formatHex(
+                (storedPath == null ? "" : storedPath).getBytes(StandardCharsets.UTF_8));
     }
 
     // ──────────────────────────── Custom Domain Resolution ────────────────────────────
