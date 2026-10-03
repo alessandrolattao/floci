@@ -2346,14 +2346,23 @@ public class ApiGatewayExecuteController {
 
     // ──────────────────────────── API Gateway v2 dispatch ────────────────────────────
 
+    /**
+     * The headers an HTTP API's CORS configuration sets, which API Gateway ignores when an
+     * integration returns them, lowercased for a case-insensitive match.
+     */
+    private static final Set<String> HTTP_API_CORS_HEADERS = Set.of(
+            "access-control-allow-origin",
+            "access-control-allow-credentials",
+            "access-control-expose-headers",
+            "access-control-max-age",
+            "access-control-allow-methods",
+            "access-control-allow-headers");
+
     private static Response httpApiCorsPreflight(Api.Cors cors, String requestOrigin) {
         Response.ResponseBuilder response = Response.noContent().type(MediaType.TEXT_PLAIN_TYPE);
         String allowOrigin = matchingCorsOrigin(cors.allowOrigins(), requestOrigin);
         if (allowOrigin != null) {
             response.header("Access-Control-Allow-Origin", allowOrigin);
-            if (!"*".equals(allowOrigin)) {
-                response.header("Vary", "Origin");
-            }
         }
         putCorsListHeader(response, "Access-Control-Allow-Methods", cors.allowMethods());
         putCorsListHeader(response, "Access-Control-Allow-Headers", cors.allowHeaders());
@@ -2364,6 +2373,47 @@ public class ApiGatewayExecuteController {
         if (Boolean.TRUE.equals(cors.allowCredentials())) {
             response.header("Access-Control-Allow-Credentials", "true");
         }
+        return response.build();
+    }
+
+    private static Response withHttpApiCors(Api api, HttpHeaders headers, Response integrationResponse) {
+        if (api == null || api.getCorsConfiguration() == null) {
+            return integrationResponse;
+        }
+        return withHttpApiCors(api.getCorsConfiguration(),
+                headers == null ? null : headers.getHeaderString("Origin"), integrationResponse);
+    }
+
+    /**
+     * Applies an HTTP API's CORS configuration to a response: the integration's, or one API Gateway
+     * makes itself to refuse a request (an authorizer's 401 or 403, an unsigned AWS_IAM call's 403).
+     * AWS ignores the CORS headers an integration returns once the API has a configuration, and adds
+     * its own to the response of a request whose {@code Origin} it allows:
+     * {@code Access-Control-Allow-Origin}, and {@code Access-Control-Allow-Credentials} and
+     * {@code Access-Control-Expose-Headers} when configured. The methods, headers and max age only
+     * answer a preflight. AWS adds no {@code Vary}, here or on the preflight (measured on an HTTP
+     * API with a single allowed origin).
+     */
+    static Response withHttpApiCors(Api.Cors cors, String requestOrigin, Response integrationResponse) {
+        Response.ResponseBuilder response = Response.status(integrationResponse.getStatus())
+                .entity(integrationResponse.getEntity());
+        for (Map.Entry<String, List<Object>> header : integrationResponse.getHeaders().entrySet()) {
+            if (HTTP_API_CORS_HEADERS.contains(header.getKey().toLowerCase(Locale.ROOT))) {
+                continue;
+            }
+            for (Object value : header.getValue()) {
+                response.header(header.getKey(), value);
+            }
+        }
+        String allowOrigin = matchingCorsOrigin(cors.allowOrigins(), requestOrigin);
+        if (allowOrigin == null) {
+            return response.build();
+        }
+        response.header("Access-Control-Allow-Origin", allowOrigin);
+        if (Boolean.TRUE.equals(cors.allowCredentials())) {
+            response.header("Access-Control-Allow-Credentials", "true");
+        }
+        putCorsListHeader(response, "Access-Control-Expose-Headers", cors.exposeHeaders());
         return response.build();
     }
 
@@ -2437,7 +2487,7 @@ public class ApiGatewayExecuteController {
             ExecuteApiSigV4Authorizer.Result iamResult =
                     sigV4Authorizer.authorize(httpMethod, headers, uriInfo, body, routeContext.signedRequestPath());
             if (!iamResult.authorized()) {
-                return httpApiIamRejection(iamResult);
+                return withHttpApiCors(api, headers, httpApiIamRejection(iamResult));
             }
             iamIdentity = iamResult.identity();
         }
@@ -2446,7 +2496,9 @@ public class ApiGatewayExecuteController {
         List<String> jwtScopes = null;
         if ("JWT".equalsIgnoreCase(route.getAuthorizationType()) && route.getAuthorizerId() != null) {
             JwtAuthorizerResult jwtResult = enforceJwtAuthorizer(region, apiId, route, headers, uriInfo);
-            if (jwtResult.errorResponse() != null) return jwtResult.errorResponse();
+            if (jwtResult.errorResponse() != null) {
+                return withHttpApiCors(api, headers, jwtResult.errorResponse());
+            }
             jwtClaims = jwtResult.claims();
             jwtScopes = jwtResult.scopes();
         }
@@ -2456,7 +2508,7 @@ public class ApiGatewayExecuteController {
             RequestAuthorizerResult requestResult =
                     enforceRequestAuthorizerV2(region, apiId, stageName, route, httpMethod, path, headers, uriInfo);
             if (requestResult.errorResponse() != null) {
-                return requestResult.errorResponse();
+                return withHttpApiCors(api, headers, requestResult.errorResponse());
             }
             lambdaAuthorizerContext = requestResult.context();
         }
@@ -2484,8 +2536,8 @@ public class ApiGatewayExecuteController {
         if (integrationType == null || integrationType.isEmpty()) integrationType = "AWS_PROXY";
 
         if ("HTTP_PROXY".equalsIgnoreCase(integrationType)) {
-            return dispatchHttpProxyV2(integration, route, httpMethod, path, headers, uriInfo, body,
-                    apiId, stageName, jwtClaims);
+            return withHttpApiCors(api, headers, dispatchHttpProxyV2(integration, route, httpMethod, path,
+                    headers, uriInfo, body, apiId, stageName, jwtClaims));
         }
 
         String functionName = functionNameFromUri(integration.getIntegrationUri());
@@ -2505,7 +2557,7 @@ public class ApiGatewayExecuteController {
         try {
             InvokeResult result = lambdaService.invoke(region, functionName,
                     eventJson.getBytes(), InvocationType.RequestResponse);
-            return buildProxyResponse(result, true);
+            return withHttpApiCors(api, headers, buildProxyResponse(result, true));
         } catch (AwsException e) {
             if (e.getHttpStatus() == 404) {
                 return Response.status(404)

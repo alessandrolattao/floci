@@ -486,4 +486,127 @@ class ApiGatewayExecuteControllerTest {
             assertEquals("rest-v1", response.getHeaderString("X-Trace"));
         }
     }
+
+    // ──────────────────────────── HTTP API CORS on integration responses ────────────────────────────
+
+    private static final String APP_ORIGIN = "https://app.example.com";
+
+    private static Api.Cors cors(List<String> allowOrigins, Boolean allowCredentials, List<String> exposeHeaders) {
+        return new Api.Cors(allowOrigins, List.of("GET", "POST"), List.of("authorization"), exposeHeaders,
+                600, allowCredentials);
+    }
+
+    private static Response integrationResponseWithItsOwnCors() {
+        return Response.status(201)
+                .entity("{\"ok\":true}".getBytes(StandardCharsets.UTF_8))
+                .type("application/json")
+                .header("X-Trace", "kept")
+                .header("Access-Control-Allow-Origin", "https://backend.example.com")
+                .header("access-control-allow-methods", "PUT")
+                .header("Access-Control-Allow-Headers", "x-backend")
+                .header("Access-Control-Max-Age", "1")
+                .header("Access-Control-Expose-Headers", "x-backend")
+                .header("Access-Control-Allow-Credentials", "false")
+                .build();
+    }
+
+    @Test
+    void httpApiCorsAddsTheConfiguredHeadersForAnAllowedOrigin() {
+        Response response = ApiGatewayExecuteController.withHttpApiCors(
+                cors(List.of(APP_ORIGIN), true, List.of("x-request-id", "date")), APP_ORIGIN,
+                integrationResponseWithItsOwnCors());
+
+        assertEquals(201, response.getStatus());
+        assertEquals("{\"ok\":true}", new String((byte[]) response.getEntity(), StandardCharsets.UTF_8));
+        assertEquals("application/json", response.getHeaderString("Content-Type"));
+        assertEquals("kept", response.getHeaderString("X-Trace"));
+        assertEquals(List.of(APP_ORIGIN), response.getStringHeaders().get("Access-Control-Allow-Origin"));
+        assertEquals(List.of("true"), response.getStringHeaders().get("Access-Control-Allow-Credentials"));
+        assertEquals(List.of("x-request-id, date"), response.getStringHeaders().get("Access-Control-Expose-Headers"));
+        assertNull(response.getHeaderString("Vary"), "AWS adds no Vary to an HTTP API response");
+        assertNull(response.getHeaderString("Access-Control-Allow-Methods"));
+        assertNull(response.getHeaderString("Access-Control-Allow-Headers"));
+        assertNull(response.getHeaderString("Access-Control-Max-Age"));
+    }
+
+    @Test
+    void httpApiCorsOmitsCredentialsAndExposeHeadersThatAreNotConfigured() {
+        Response response = ApiGatewayExecuteController.withHttpApiCors(
+                cors(List.of(APP_ORIGIN), null, null), APP_ORIGIN, integrationResponseWithItsOwnCors());
+
+        assertEquals(APP_ORIGIN, response.getHeaderString("Access-Control-Allow-Origin"));
+        assertNull(response.getHeaderString("Access-Control-Allow-Credentials"));
+        assertNull(response.getHeaderString("Access-Control-Expose-Headers"));
+    }
+
+    @Test
+    void httpApiCorsIgnoresTheIntegrationsCorsHeadersForADisallowedOrigin() {
+        Response response = ApiGatewayExecuteController.withHttpApiCors(
+                cors(List.of(APP_ORIGIN), true, List.of("x-request-id")), "https://evil.example",
+                integrationResponseWithItsOwnCors());
+
+        assertEquals(201, response.getStatus());
+        assertEquals("kept", response.getHeaderString("X-Trace"));
+        for (String header : List.of("Access-Control-Allow-Origin", "Access-Control-Allow-Credentials",
+                "Access-Control-Expose-Headers", "Access-Control-Allow-Methods",
+                "Access-Control-Allow-Headers", "Access-Control-Max-Age", "Vary")) {
+            assertNull(response.getHeaderString(header), header);
+        }
+    }
+
+    @Test
+    void httpApiCorsAddsNothingWithoutAnOriginHeader() {
+        Response response = ApiGatewayExecuteController.withHttpApiCors(
+                cors(List.of("*"), null, List.of("x-request-id")), null, integrationResponseWithItsOwnCors());
+
+        assertNull(response.getHeaderString("Access-Control-Allow-Origin"));
+        assertNull(response.getHeaderString("Access-Control-Expose-Headers"));
+        assertEquals("kept", response.getHeaderString("X-Trace"));
+    }
+
+    @Test
+    void httpApiCorsAnswersAWildcardWithAStarAndNoVary() {
+        Response response = ApiGatewayExecuteController.withHttpApiCors(
+                cors(List.of("*"), null, null), APP_ORIGIN, integrationResponseWithItsOwnCors());
+
+        assertEquals("*", response.getHeaderString("Access-Control-Allow-Origin"));
+        assertNull(response.getHeaderString("Vary"));
+    }
+
+    @Test
+    void httpApiCorsEchoesAnOriginAPrefixWildcardAllows() {
+        Response allowed = ApiGatewayExecuteController.withHttpApiCors(
+                cors(List.of("https://*"), null, null), APP_ORIGIN, integrationResponseWithItsOwnCors());
+        Response refused = ApiGatewayExecuteController.withHttpApiCors(
+                cors(List.of("https://*"), null, null), "http://app.example.com", integrationResponseWithItsOwnCors());
+
+        assertEquals(APP_ORIGIN, allowed.getHeaderString("Access-Control-Allow-Origin"));
+        assertNull(refused.getHeaderString("Access-Control-Allow-Origin"));
+    }
+
+    @Test
+    void httpApiCorsKeepsTheIntegrationsOwnVary() {
+        Response integration = Response.ok().header("Vary", "Accept-Encoding, origin").build();
+
+        Response response = ApiGatewayExecuteController.withHttpApiCors(
+                cors(List.of(APP_ORIGIN), null, null), APP_ORIGIN, integration);
+
+        assertEquals(List.of("Accept-Encoding, origin"), response.getStringHeaders().get("Vary"));
+    }
+
+    @Test
+    void httpApiCorsDropsTheCorsHeadersALambdaReturnsInLowercase() {
+        ApiGatewayExecuteController controller = controller(new ObjectMapper());
+        Response lambdaResponse = controller.buildProxyResponse(proxyPayload("""
+                {"statusCode":200,"headers":{"access-control-allow-origin":"*","x-trace":"lambda"},
+                 "body":"hi"}
+                """), true);
+
+        Response response = ApiGatewayExecuteController.withHttpApiCors(
+                cors(List.of(APP_ORIGIN), null, null), "https://evil.example", lambdaResponse);
+
+        assertNull(response.getHeaderString("Access-Control-Allow-Origin"));
+        assertEquals("lambda", response.getHeaderString("x-trace"));
+        assertEquals("hi", new String((byte[]) response.getEntity(), StandardCharsets.UTF_8));
+    }
 }

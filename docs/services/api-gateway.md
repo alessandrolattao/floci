@@ -554,6 +554,15 @@ curl http://{apiId}.execute-api.{region}.localhost.floci.io:4566/{stageName}/{pa
 APIs created or updated with `disableExecuteApiEndpoint` reject requests to
 this default hostname with `404 Not Found`, matching AWS HTTP API behavior.
 
+An API with a `corsConfiguration` answers a preflight (an `OPTIONS` request carrying `Origin` and
+`Access-Control-Request-Method`) from that configuration, whether or not it has an `OPTIONS` route.
+On every other response, an integration's or a refusal API Gateway makes itself (a JWT or Lambda
+authorizer's `401` or `403`, an unsigned call to an `AWS_IAM` route), it ignores the CORS headers an
+integration returns and, when the request's `Origin` is allowed, adds `Access-Control-Allow-Origin`,
+and `Access-Control-Allow-Credentials` and `Access-Control-Expose-Headers` when they are configured,
+as AWS does. It adds no `Vary`. A `404` for a path no route matches carries none of them, as on AWS.
+An API without one leaves CORS to its integrations.
+
 Routes carrying `authorizationType: AWS_IAM`: including those an OpenAPI import resolves from an
 `awsSigv4` security scheme: require a signed caller; see
 [IAM Authorization](#iam-authorization).
