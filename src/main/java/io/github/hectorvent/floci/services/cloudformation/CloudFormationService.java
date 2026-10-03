@@ -21,6 +21,8 @@ import io.github.hectorvent.floci.services.cloudformation.provisioners.CfnDynami
 import io.github.hectorvent.floci.services.cloudformation.provisioners.CfnResourceDispatcher;
 import io.github.hectorvent.floci.services.cloudformation.provisioners.CfnRollback;
 import io.github.hectorvent.floci.services.cloudformation.provisioners.UpdateCleanupResult;
+import io.github.hectorvent.floci.services.iam.IamService;
+import io.github.hectorvent.floci.services.iam.model.IamRole;
 import io.github.hectorvent.floci.services.s3.S3Service;
 import io.github.hectorvent.floci.services.s3.model.S3Object;
 import io.github.hectorvent.floci.services.ssm.SsmService;
@@ -83,6 +85,7 @@ public class CloudFormationService implements ResourceProvider {
     private final CfnResourceDispatcher dispatcher;
     private final S3Service s3Service;
     private final SsmService ssmService;
+    private final IamService iamService;
     private final CfnDynamicReferences dynamicReferences;
     private final ObjectMapper objectMapper;
     private final EmulatorConfig config;
@@ -100,13 +103,15 @@ public class CloudFormationService implements ResourceProvider {
 
     @Inject
     public CloudFormationService(CfnResourceDispatcher dispatcher, S3Service s3Service,
-                                 SsmService ssmService, CfnDynamicReferences dynamicReferences,
+                                 SsmService ssmService, IamService iamService,
+                                 CfnDynamicReferences dynamicReferences,
                                  ObjectMapper objectMapper, EmulatorConfig config,
                                  RegionResolver regionResolver, Clock clock,
                                  StorageFactory storageFactory) {
         this.dispatcher = dispatcher;
         this.s3Service = s3Service;
         this.ssmService = ssmService;
+        this.iamService = iamService;
         this.dynamicReferences = dynamicReferences;
         this.objectMapper = objectMapper;
         this.config = config;
@@ -363,6 +368,7 @@ public class CloudFormationService implements ResourceProvider {
         // template declaring the SAM transform, whether or not that transform succeeded, so
         // gating this call on samTransformFailureReason == null duplicates that check for no
         // effect.
+        validateGetStackOutputPlacement(resolvedTemplate);
         validateConditionDependencies(resolvedTemplate, parameters, region, accountId);
 
         // A CREATE change set against a name that already has a stack of any status - including
@@ -1521,7 +1527,9 @@ public class CloudFormationService implements ResourceProvider {
                             accountId, region, stack.getStackName(),
                             stack.getStackId(), resolvedParams, physicalIds, resourceAttrs, conditions, mappings, objectMapper,
                             name -> exports.get(accountExportKey(accountId, exportKey(region, name))),
-                            value -> dynamicReferences.resolveDynamicReferences(value, region, false));
+                            value -> dynamicReferences.resolveDynamicReferences(value, region, false),
+                            (name, output, outputRegion, roleArn) ->
+                                    resolveStackOutput(accountId, name, output, outputRegion, roleArn));
 
                     StackResource resource = stack.getResources().get(logicalId);
                     StackResource previousResource = resource;
@@ -1679,7 +1687,9 @@ public class CloudFormationService implements ResourceProvider {
                     accountId, region, stack.getStackName(),
                     stack.getStackId(), resolvedParams, physicalIds, resourceAttrs, conditions, mappings, objectMapper,
                     name -> exports.get(accountExportKey(accountId, exportKey(region, name))),
-                    value -> dynamicReferences.resolveDynamicReferences(value, region, false));
+                    value -> dynamicReferences.resolveDynamicReferences(value, region, false),
+                    (name, output, outputRegion, roleArn) ->
+                            resolveStackOutput(accountId, name, output, outputRegion, roleArn));
 
             // Resolve outputs before mutating stack/global export state, so failed updates do not
             // leave stale or partially registered exports behind.
@@ -1691,7 +1701,7 @@ public class CloudFormationService implements ResourceProvider {
             if (outputs.isObject()) {
                 outputs.fields().forEachRemaining(e -> {
                     JsonNode outputDef = e.getValue();
-                    String value = finalEngine.resolve(outputDef.path("Value"));
+                    String value = finalEngine.resolveOutputValue(outputDef.path("Value"));
                     newOutputs.put(e.getKey(), value);
 
                     // Register exports
@@ -3010,6 +3020,88 @@ public class CloudFormationService implements ResourceProvider {
                     "ChangeSet [" + changeSetNameOrArn + "] does not exist", 400);
         }
         return changeSet;
+    }
+
+    /**
+     * Reads the output a {@code Fn::GetStackOutput} names, as DescribeStacks does in the
+     * referenced account and Region: the consuming stack's account, or the account of
+     * {@code roleArn}, a role CloudFormation has to be able to assume. The failures carry the
+     * messages AWS reports for them: STS's AccessDenied for a role that cannot be assumed (a user,
+     * a role of another partition, one that does not exist), DescribeStacks' ValidationError for a
+     * missing stack, and a template error for a missing output.
+     */
+    private String resolveStackOutput(String accountId, String stackName, String outputName,
+                                      String region, String roleArn) {
+        String ownerAccount = accountId;
+        if (roleArn != null) {
+            AwsArnUtils.Arn role = AwsArnUtils.parse(roleArn);
+            String partition = AwsRegions.partitionFor(region);
+            boolean assumable = "iam".equals(role.service()) && role.resource().startsWith("role/")
+                    && partition.equals(role.partition())
+                    && iamService.findRole(role.accountId(), role.resource().substring(role.resource().lastIndexOf('/') + 1))
+                            .map(IamRole::getArn)
+                            .filter(AwsArnUtils::isArn)
+                            .map(AwsArnUtils::parse)
+                            .filter(stored -> stored.resource().equals(role.resource()))
+                            .isPresent();
+            if (!assumable) {
+                throw new AwsException("AccessDenied", CloudFormationTemplateEngine.sdkErrorMessage(
+                        "User: arn:" + partition + ":iam::" + accountId + ":root is not authorized to perform:"
+                                + " sts:AssumeRole on resource: " + roleArn,
+                        "AWSSecurityTokenService", 403, "AccessDenied"), 403);
+            }
+            ownerAccount = role.accountId();
+        }
+        Stack referenced = resolveStack(stackName, region, ownerAccount);
+        if (referenced == null) {
+            throw new AwsException("ValidationError", CloudFormationTemplateEngine.sdkErrorMessage(
+                    "Stack with id " + stackName + " does not exist", "AmazonCloudFormation", 400,
+                    "ValidationError"), 400);
+        }
+        String value = referenced.outputsSnapshot().get(outputName);
+        if (value == null) {
+            throw new AwsException("ValidationError", "TemplateError: Fn::GetStackOutput references output "
+                    + outputName + " from stack " + stackName
+                    + ", but this output was not found. The output may have been deleted.", 400);
+        }
+        return value;
+    }
+
+    /**
+     * The two places AWS refuses {@code Fn::GetStackOutput} when the stack operation is requested,
+     * before anything runs: anywhere in the Conditions section, and inside an
+     * {@code Fn::ImportValue}, whose export name may not depend on another stack.
+     */
+    private void validateGetStackOutputPlacement(String templateBody) {
+        JsonNode template;
+        try {
+            template = parseTemplate(templateBody);
+        } catch (Exception e) {
+            LOG.debugv("Skipping Fn::GetStackOutput placement validation; template did not parse: {0}",
+                    e.getMessage());
+            return;
+        }
+        if (CloudFormationTemplateEngine.containsGetStackOutput(template.path("Conditions"))) {
+            throw new AwsException("ValidationError",
+                    "Template error: Cannot use Fn::GetStackOutput in Conditions.", 400);
+        }
+        if (importsAStackOutput(template)) {
+            throw new AwsException("ValidationError", "Template error: the attribute in Fn::ImportValue must not"
+                    + " depend on any resources, imported values, or Fn::GetAZs", 400);
+        }
+    }
+
+    private static boolean importsAStackOutput(JsonNode node) {
+        if (node.isObject() && node.has("Fn::ImportValue")
+                && CloudFormationTemplateEngine.containsGetStackOutput(node.get("Fn::ImportValue"))) {
+            return true;
+        }
+        for (JsonNode child : node) {
+            if (importsAStackOutput(child)) {
+                return true;
+            }
+        }
+        return false;
     }
 
     /**

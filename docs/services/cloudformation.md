@@ -296,6 +296,34 @@ export table — so two accounts can each own an export with the same name witho
 how CloudFormation isolates exports per account and region. This is what lets a multi-account LZA
 deployment reuse identical export names across its member accounts.
 
+## Stack Output References (`Fn::GetStackOutput`)
+
+`Fn::GetStackOutput` reads an output of another stack, which needs no `Export`. It is what the CDK
+synthesizes for a weak cross-stack reference. The value is read when the consuming resource is created
+or updated. Floci follows what CloudFormation does, measured against it, where that departs from the
+intrinsic's reference page:
+
+- `StackName` and `OutputName` are required; `Region` defaults to the consuming stack's Region, and
+  `RoleArn` names a role in the account that owns the referenced stack. A key the function does not
+  define is ignored.
+- A parameter value may use any intrinsic function, including a `Ref` or `Fn::GetAtt` to a resource
+  of the same stack, `Fn::ImportValue` and another `Fn::GetStackOutput`; it resolves like any property.
+- A referenced stack that does not exist fails the resource with DescribeStacks' `ValidationError`
+  (`Stack with id X does not exist (Service: AmazonCloudFormation; ...)`), and an output that does not
+  exist with `TemplateError: Fn::GetStackOutput references output O from stack S, but this output was
+  not found. The output may have been deleted.` The reference never resolves to an empty string.
+- A `Region` that is not a Region fails with `TemplateError: Region R in Fn::GetStackOutput is not a
+  valid AWS region.`, and one of another partition with `InvalidClientTokenId`, as the call to it does.
+- A `RoleArn` that is not an ARN fails with `TemplateError: Invalid RoleArn parameter X in
+  Fn::GetStackOutput`. Any other ARN that is not an existing role of the consuming stack's partition
+  (a user, a role of another partition, a role that does not exist) fails with STS's `AccessDenied`.
+  Floci does not run stack operations under an execution role, so a role's trust policy and its
+  `cloudformation:DescribeStacks` permission are not evaluated, and the caller named in the message
+  is the account's root.
+- It resolves inside an `Fn::Sub` variable map, inside `Fn::Base64` and as a direct `Outputs` value,
+  which the reference page lists as not supported yet. Anywhere in `Conditions`, and inside
+  `Fn::ImportValue`, the stack operation is refused when it is requested, with `ValidationError`.
+
 ## Template Parameters
 
 Parameters passed to `CreateStack` / `UpdateStack` (and echoed back by `DescribeStacks`) are resolved
