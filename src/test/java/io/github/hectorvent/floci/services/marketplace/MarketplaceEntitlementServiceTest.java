@@ -65,4 +65,17 @@ class MarketplaceEntitlementServiceTest {
         assertThrows(AwsException.class,
                 () -> service.getEntitlements(mapper.readTree("{\"ProductCode\":\"product-local\"}"), "us-west-2"));
     }
+
+    @Test
+    void getEntitlementsIsServedInEveryRegionAwsPublishesOutsideCommercial() throws Exception {
+        for (String region : new String[] {"cn-northwest-1", "eusc-de-east-1"}) {
+            JsonNode response = service.getEntitlements(
+                    mapper.readTree("{\"ProductCode\":\"product-local\"}"), region);
+            assertEquals(0, response.path("Entitlements").size(), region);
+        }
+        AwsException error = assertThrows(AwsException.class,
+                () -> service.getEntitlements(
+                        mapper.readTree("{\"ProductCode\":\"product-local\"}"), "cn-north-1"));
+        assertEquals("InvalidParameterException", error.getErrorCode());
+    }
 }

@@ -146,4 +146,17 @@ class MarketplaceAgreementServiceTest {
                 () -> service.handle("SearchAgreements", mapper.readTree("{\"filters\":[{\"name\":\"AgreementType\",\"values\":[\"PurchaseAgreement\"]}]}"), "us-west-2"));
         assertEquals("ValidationException", error.getErrorCode());
     }
+
+    @Test
+    void searchAgreementsIsServedInEveryRegionAwsPublishesOutsideCommercial() throws Exception {
+        JsonNode request = mapper.readTree(
+                "{\"filters\":[{\"name\":\"AgreementType\",\"values\":[\"PurchaseAgreement\"]}]}");
+        for (String region : new String[] {"eusc-de-east-1", "us-iso-east-1", "us-isob-east-1", "us-isof-south-1"}) {
+            JsonNode response = service.handle("SearchAgreements", request, region);
+            assertEquals(0, response.path("agreementViewSummaries").size(), region);
+        }
+        AwsException error = assertThrows(AwsException.class,
+                () -> service.handle("SearchAgreements", request, "cn-north-1"));
+        assertEquals("ValidationException", error.getErrorCode());
+    }
 }
