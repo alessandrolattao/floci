@@ -262,6 +262,18 @@ accepts, not only by name:
   `OnDemandPercentageAboveBaseCapacity`, `SpotAllocationStrategy`). A non-integer where AWS expects
   a number fails the stack rather than being dropped.
 
+## Updates With Nothing to Change
+
+An `UpdateStack` that submits the template the stack already has, with the same parameter values,
+is refused with `ValidationError` `No updates are to be performed.` and changes nothing, as on AWS.
+The template is compared as a document, so indentation and key order do not count; parameters are
+compared by their resolved values, so an `AWS::SSM::Parameter::Value` parameter whose stored value
+moved is a change. A `CreateChangeSet` for such an update is created `FAILED`, `UNAVAILABLE`, with
+`The submitted information didn't contain changes. Submit different information to create a change
+set.`, which is what the AWS CLI's `deploy` and the CDK read as "no changes". A change to the
+`Outputs` or the `Description` alone is an update, and a template with a nested stack is always
+updated, since its child template is read again.
+
 ## Lambda Stack Updates
 
 `AWS::Lambda::Function` resources are reconciled during `UpdateStack` in the same shape as CloudFormation/CDK deployments:

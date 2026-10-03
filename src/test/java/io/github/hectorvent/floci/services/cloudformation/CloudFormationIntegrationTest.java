@@ -871,7 +871,7 @@ class CloudFormationIntegrationTest {
             .contentType("application/x-www-form-urlencoded")
             .formParam("Action", "UpdateStack")
             .formParam("StackName", stackName)
-            .formParam("TemplateBody", template)
+            .formParam("TemplateBody", CfnUpdates.forceUpdate(template))
         .when()
             .post("/")
         .then()
@@ -2931,7 +2931,7 @@ class CloudFormationIntegrationTest {
             .contentType("application/x-www-form-urlencoded")
             .formParam("Action", "UpdateStack")
             .formParam("StackName", stackName)
-            .formParam("TemplateBody", template)
+            .formParam("TemplateBody", CfnUpdates.forceUpdate(template))
         .when()
             .post("/")
         .then()
@@ -8394,13 +8394,14 @@ class CloudFormationIntegrationTest {
             .statusCode(200)
             .body("Items.findAll { it.ApiId == '" + apiId + "' }.Name", hasItem("cfn-apigwv2-api-v2"));
 
-        // Idempotent re-deploy with no changes is a no-op (criterion #3): counts/ids unchanged
+        // Re-deploying the same resources is a no-op for them (criterion #3): counts/ids unchanged.
+        // An identical template is refused outright, so a new Description forces the update.
         given()
             .contentType("application/x-www-form-urlencoded")
             .formParam("Action", "UpdateStack")
             .formParam("StackName", stackName)
-            .formParam("TemplateBody",
-                    template.formatted("cfn-apigwv2-api-v2", "https://example.com/v2", "GET /things", "true"))
+            .formParam("TemplateBody", CfnUpdates.forceUpdate(
+                    template.formatted("cfn-apigwv2-api-v2", "https://example.com/v2", "GET /things", "true")))
         .when()
             .post("/")
         .then()
@@ -10763,7 +10764,7 @@ class CloudFormationIntegrationTest {
             .contentType("application/x-www-form-urlencoded")
             .formParam("Action", "UpdateStack")
             .formParam("StackName", stackName)
-            .formParam("TemplateBody", template)
+            .formParam("TemplateBody", CfnUpdates.forceUpdate(template))
         .when()
             .post("/")
         .then()

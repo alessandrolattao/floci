@@ -64,6 +64,13 @@ public class CloudFormationService implements ResourceProvider {
 
     private static final Logger LOG = Logger.getLogger(CloudFormationService.class);
 
+    /**
+     * The reason CloudFormation gives a change set that submits what the stack already has, and
+     * the condition under which UpdateStack answers "No updates are to be performed."
+     */
+    static final String NO_CHANGES_REASON =
+            "The submitted information didn't contain changes. Submit different information to create a change set.";
+
     private static final int MAX_OPERATION_THREADS = 16;
     private static final int MAX_QUEUED_OPERATIONS = 128;
 
@@ -395,6 +402,7 @@ public class CloudFormationService implements ResourceProvider {
         // remapping function does short, non-blocking work.
         boolean isCreateType = changeSetType == null || "CREATE".equalsIgnoreCase(changeSetType);
         ChangeSet[] created = new ChangeSet[1];
+        boolean[] unchanged = new boolean[1];
         Stack stack = stacks.compute(stackKey(accountId, stackName, region), (k, existing) -> {
             Stack target;
             if (existing == null) {
@@ -432,6 +440,7 @@ public class CloudFormationService implements ResourceProvider {
                     return existing;
                 }
                 target = existing;
+                unchanged[0] = !isCreateType && submitsWhatTheStackHas(existing, resolvedTemplate, parameters, region);
             }
 
             ChangeSet cs = new ChangeSet();
@@ -447,6 +456,10 @@ public class CloudFormationService implements ResourceProvider {
                 cs.setStatus("FAILED");
                 cs.setExecutionStatus("UNAVAILABLE");
                 cs.setStatusReason(samTransformFailureReason);
+            } else if (unchanged[0]) {
+                cs.setStatus("FAILED");
+                cs.setExecutionStatus("UNAVAILABLE");
+                cs.setStatusReason(NO_CHANGES_REASON);
             } else {
                 cs.setStatus("CREATE_COMPLETE");
                 cs.setExecutionStatus("AVAILABLE");
@@ -460,6 +473,48 @@ public class CloudFormationService implements ResourceProvider {
             persistStack(stack);
         }
         return created[0];
+    }
+
+    /**
+     * Whether an UPDATE submits what the stack already has: the same template, compared as a
+     * document so that indentation and key order do not count, the same parameter values, and no
+     * nested stack. CloudFormation then has nothing to do. A change to the Outputs or the
+     * Description alone is a different document, and an update, as on AWS.
+     */
+    private boolean submitsWhatTheStackHas(Stack stack, String templateBody, Map<String, String> parameters,
+                                           String region) {
+        if (stack.getTemplateBody() == null || templateBody == null) {
+            return false;
+        }
+        JsonNode template;
+        try {
+            template = parseTemplate(templateBody);
+            if (!parseTemplate(stack.getTemplateBody()).equals(template)) {
+                return false;
+            }
+        } catch (Exception e) {
+            LOG.debugv("Treating an update as a change; a template did not parse: {0}", e.getMessage());
+            return false;
+        }
+        // A nested stack is always updated, whether or not its template changed: AWS reads the
+        // child template again and reports the nested stack as a change on every update.
+        for (JsonNode resource : template.path("Resources")) {
+            if ("AWS::CloudFormation::Stack".equals(resource.path("Type").asText())) {
+                return false;
+            }
+        }
+        // The values compared are the resolved ones, as the change set's own diff does: an
+        // AWS::SSM::Parameter::Value parameter whose stored value moved is a change even though
+        // the name it is given is the same.
+        Map<String, String> deployed = stack.resolvedParametersSnapshot().isEmpty()
+                ? stack.parametersSnapshot() : stack.resolvedParametersSnapshot();
+        Map<String, String> submitted = resolveDefaultParameters(template, parameters == null ? Map.of() : parameters);
+        try {
+            submitted = resolveSsmParameters(template, submitted, region);
+        } catch (AwsException e) {
+            return false;
+        }
+        return deployed.equals(submitted);
     }
 
     /**
