@@ -66,7 +66,7 @@ class EventBridgeTargetRetryIntegrationTest {
 
     @Test
     @Order(2)
-    void listTargetsByRuleEchoesRetryPolicyAndDeadLetterConfig() {
+    void listTargetsByRuleEchoesRoleRetryPolicyAndDeadLetterConfig() {
         given()
                 .contentType(EB_CT)
                 .header("X-Amz-Target", "AWSEvents.PutTargets")
@@ -77,6 +77,7 @@ class EventBridgeTargetRetryIntegrationTest {
                             {
                               "Id": "WithPolicies",
                               "Arn": "%s",
+                              "RoleArn": "arn:aws:iam::000000000000:role/eb-retry-target-role",
                               "RetryPolicy": {"MaximumRetryAttempts": 4, "MaximumEventAgeInSeconds": 120},
                               "DeadLetterConfig": {"Arn": "%s"}
                             },
@@ -98,6 +99,9 @@ class EventBridgeTargetRetryIntegrationTest {
                 .body("Targets.find { it.Id == 'WithPolicies' }.RetryPolicy.MaximumRetryAttempts", equalTo(4))
                 .body("Targets.find { it.Id == 'WithPolicies' }.RetryPolicy.MaximumEventAgeInSeconds", equalTo(120))
                 .body("Targets.find { it.Id == 'WithPolicies' }.DeadLetterConfig.Arn", equalTo(dlqArn))
+                .body("Targets.find { it.Id == 'WithPolicies' }.RoleArn",
+                        equalTo("arn:aws:iam::000000000000:role/eb-retry-target-role"))
+                .body("Targets.find { it.Id == 'Plain' }", not(hasKey("RoleArn")))
                 .body("Targets.find { it.Id == 'Plain' }", not(hasKey("RetryPolicy")))
                 .body("Targets.find { it.Id == 'Plain' }", not(hasKey("DeadLetterConfig")));
 

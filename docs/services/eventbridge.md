@@ -163,6 +163,7 @@ aws events put-targets \
 - A retry uses the target's current definition, so `PutTargets` changes apply to pending retries, and a target removed with `RemoveTargets` stops being retried.
 - An accepted asynchronous Lambda invocation counts as delivered. A later function error is handled by Lambda's own retry and destination settings, not by the rule.
 - Pending retries are kept in memory and are dropped by an emulator reset or restart.
+- An `AWS::Events::Rule` target in a CloudFormation template keeps its `RetryPolicy`, `DeadLetterConfig`, `RoleArn` and `EcsParameters`, which reach the rule as `PutTargets` would set them.
 
 ## Current Behavior
 

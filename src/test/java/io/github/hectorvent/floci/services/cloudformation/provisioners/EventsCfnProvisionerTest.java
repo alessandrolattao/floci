@@ -8,6 +8,7 @@ import io.github.hectorvent.floci.core.common.AwsException;
 import io.github.hectorvent.floci.services.cloudformation.CloudFormationTemplateEngine;
 import io.github.hectorvent.floci.services.cloudformation.model.StackResource;
 import io.github.hectorvent.floci.services.eventbridge.EventBridgeService;
+import io.github.hectorvent.floci.services.eventbridge.model.EcsParameters;
 import io.github.hectorvent.floci.services.eventbridge.model.Rule;
 import io.github.hectorvent.floci.services.eventbridge.model.Target;
 import org.junit.jupiter.api.Test;
@@ -151,6 +152,90 @@ class EventsCfnProvisionerTest {
 
         verify(events).putTargets(eq("orders"), any(), any(), anyString());
         verify(events, never()).removeTargets(anyString(), any(), any(), anyString());
+    }
+
+    // ── each target carries what PutTargets would set ────────────────────────
+
+    @Test
+    void aTargetKeepsItsDeadLetterConfigRetryPolicyRoleAndEcsParameters() throws Exception {
+        // The provisioner copied Id, Arn, the inputs, SqsParameters and BatchParameters only, so a
+        // stack's dead-letter queue and retry policy never reached delivery and an undeliverable
+        // event was logged and lost.
+        stubPutRule();
+        ObjectNode props = mapper.createObjectNode().put("Name", "orders");
+        props.putArray("Targets").add(mapper.readTree("""
+                {"Id": "Run", "Arn": "arn:aws:ecs:us-east-1:000000000000:cluster/jobs",
+                 "RoleArn": "arn:aws:iam::000000000000:role/events-run-task",
+                 "DeadLetterConfig": {"Arn": "arn:aws:sqs:us-east-1:000000000000:orders-dlq"},
+                 "RetryPolicy": {"MaximumRetryAttempts": 3, "MaximumEventAgeInSeconds": 120},
+                 "EcsParameters": {
+                   "TaskDefinitionArn": "arn:aws:ecs:us-east-1:000000000000:task-definition/job:1",
+                   "TaskCount": 2, "LaunchType": "FARGATE",
+                   "NetworkConfiguration": {"AwsVpcConfiguration": {
+                     "Subnets": ["subnet-1"], "SecurityGroups": ["sg-1"], "AssignPublicIp": "DISABLED"}},
+                   "PlacementStrategies": [{"Type": "spread", "Field": "attribute:ecs.availability-zone"}],
+                   "PlacementConstraints": [{"Type": "memberOf", "Expression": "attribute:ecs.os-type == linux"}],
+                   "CapacityProviderStrategy": [{"CapacityProvider": "FARGATE_SPOT", "Weight": 1, "Base": 0}],
+                   "TagList": [{"Key": "team", "Value": "jobs"}]}}
+                """));
+
+        provisioner.provision(resource("AWS::Events::Rule", "Rule"), props, ctx(null));
+
+        Target put = onlyPutTarget();
+        assertEquals("arn:aws:iam::000000000000:role/events-run-task", put.getRoleArn());
+        assertEquals("arn:aws:sqs:us-east-1:000000000000:orders-dlq", put.getDeadLetterConfig().arn());
+        assertEquals(new Target.RetryPolicy(3, 120), put.getRetryPolicy());
+        EcsParameters ecs = put.getEcsParameters();
+        assertEquals("arn:aws:ecs:us-east-1:000000000000:task-definition/job:1", ecs.getTaskDefinitionArn());
+        assertEquals(2, ecs.getTaskCount());
+        assertEquals("FARGATE", ecs.getLaunchType());
+        assertEquals(List.of("subnet-1"), ecs.getNetworkConfiguration().getAwsvpcConfiguration().getSubnets());
+        assertEquals("DISABLED", ecs.getNetworkConfiguration().getAwsvpcConfiguration().getAssignPublicIp());
+        assertEquals(mapper.readTree("[{\"type\": \"spread\", \"field\": \"attribute:ecs.availability-zone\"}]"),
+                ecs.getPlacementStrategy());
+        assertEquals(mapper.readTree("[{\"type\": \"memberOf\", \"expression\": \"attribute:ecs.os-type == linux\"}]"),
+                ecs.getPlacementConstraints());
+        assertEquals(mapper.readTree("[{\"capacityProvider\": \"FARGATE_SPOT\", \"weight\": 1, \"base\": 0}]"),
+                ecs.getCapacityProviderStrategy());
+        assertEquals(mapper.readTree("[{\"Key\": \"team\", \"Value\": \"jobs\"}]"), ecs.getTags());
+    }
+
+    @Test
+    void aRetryPolicyResolvedToTextIsReadAsNumbers() throws Exception {
+        // A Ref or Fn::Sub resolves to text, which the template still means as an integer.
+        stubPutRule();
+        ObjectNode props = mapper.createObjectNode().put("Name", "orders");
+        props.putArray("Targets").add(mapper.readTree("""
+                {"Id": "Q", "Arn": "arn:aws:sqs:us-east-1:000000000000:q",
+                 "RetryPolicy": {"MaximumRetryAttempts": "0", "MaximumEventAgeInSeconds": "60"}}
+                """));
+
+        provisioner.provision(resource("AWS::Events::Rule", "Rule"), props, ctx(null));
+
+        assertEquals(new Target.RetryPolicy(0, 60), onlyPutTarget().getRetryPolicy());
+    }
+
+    @Test
+    void aTargetWithoutThemLeavesThemUnset() {
+        // Unset means EventBridge's defaults (185 attempts, 24 hours, no dead-letter queue).
+        stubPutRule();
+        ObjectNode props = mapper.createObjectNode().put("Name", "orders");
+        props.putArray("Targets").add(target("Q", "arn:aws:sqs:us-east-1:000000000000:q"));
+
+        provisioner.provision(resource("AWS::Events::Rule", "Rule"), props, ctx(null));
+
+        Target put = onlyPutTarget();
+        assertNull(put.getRetryPolicy());
+        assertNull(put.getDeadLetterConfig());
+        assertNull(put.getRoleArn());
+        assertNull(put.getEcsParameters());
+    }
+
+    private Target onlyPutTarget() {
+        ArgumentCaptor<List<Target>> put = ArgumentCaptor.forClass(List.class);
+        verify(events).putTargets(eq("orders"), any(), put.capture(), anyString());
+        assertEquals(1, put.getValue().size());
+        return put.getValue().getFirst();
     }
 
     // ── a failed policy removal is not swallowed ─────────────────────────────
