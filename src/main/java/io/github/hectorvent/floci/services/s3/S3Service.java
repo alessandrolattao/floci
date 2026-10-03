@@ -3640,28 +3640,77 @@ public class S3Service implements Resettable, ResourceProvider {
                                   SseCustomerHeaders copySourceSseCustomerHeaders,
                                   SseCustomerHeaders sseCustomerHeaders,
                                   CopySourceConditions copySourceConditions) {
-        S3Object source = getObject(sourceBucket, sourceKey, sourceVersionId);
-        checkCopySourcePreconditions(source, copySourceConditions);
-        validateSseCustomerAccess(source,
-                copySourceSseCustomerHeaders.algorithm(),
-                copySourceSseCustomerHeaders.key(),
-                copySourceSseCustomerHeaders.keyMd5());
-        byte[] data = source.getData();
-
-        if (copySourceRange != null && !copySourceRange.isBlank()) {
-            // format: "bytes=START-END" (inclusive on both ends)
-            String range = copySourceRange.startsWith("bytes=") ? copySourceRange.substring(6) : copySourceRange;
-            int dash = range.indexOf('-');
-            if (dash < 0) {
-                throw new AwsException("InvalidArgument", "Invalid x-amz-copy-source-range: " + copySourceRange, 400);
+        byte[] data;
+        // The source is streamed the way GetObject serves it and only the copied range is read, so
+        // the source can be any size.
+        try (ObjectRead read = openObject(sourceBucket, sourceKey, sourceVersionId)) {
+            S3Object source = read.object();
+            checkCopySourcePreconditions(source, copySourceConditions);
+            validateSseCustomerAccess(source,
+                    copySourceSseCustomerHeaders.algorithm(),
+                    copySourceSseCustomerHeaders.key(),
+                    copySourceSseCustomerHeaders.keyMd5());
+            CopySourceRange range = CopySourceRange.parse(copySourceRange, source.getSize());
+            if (range.length() > MAX_IN_MEMORY_OBJECT_SIZE) {
+                LOG.warnv("UploadPartCopy of {0} bytes into upload {1} is over the {2} bytes one part can hold in Floci; copy the source in smaller ranges",
+                        range.length(), uploadId, MAX_IN_MEMORY_OBJECT_SIZE);
+                throw new AwsException("EntityTooLarge", "Your proposed upload exceeds the maximum allowed object size.", 400);
             }
-            int start = Integer.parseInt(range.substring(0, dash).trim());
-            int end = Integer.parseInt(range.substring(dash + 1).trim());
-            data = Arrays.copyOfRange(data, start, end + 1);
+            data = readRange(read.body(), range);
+        } catch (IOException e) {
+            throw new UncheckedIOException("Failed to read the copy source", e);
         }
 
         return uploadPart(destBucket, destKey, uploadId, partNumber, data,
                 sseCustomerHeaders.algorithm(), sseCustomerHeaders.key(), sseCustomerHeaders.keyMd5());
+    }
+
+    /** An inclusive byte range of a copy source. Offsets are longs, since a source can pass 2 GiB. */
+    record CopySourceRange(long first, long last) {
+
+        long length() {
+            return last - first + 1;
+        }
+
+        /**
+         * The range an x-amz-copy-source-range header names, {@code bytes=first-last} with zero-based
+         * inclusive offsets, or the whole source when there is no header. A range that is malformed,
+         * reversed or runs past the end of the source is rejected rather than cut short or padded.
+         */
+        static CopySourceRange parse(String header, long sourceSize) {
+            if (header == null || header.isBlank()) {
+                return new CopySourceRange(0, sourceSize - 1);
+            }
+            String spec = header.startsWith("bytes=") ? header.substring("bytes=".length()) : header;
+            int dash = spec.indexOf('-');
+            if (dash > 0) {
+                try {
+                    long first = Long.parseLong(spec.substring(0, dash).trim());
+                    long last = Long.parseLong(spec.substring(dash + 1).trim());
+                    if (first >= 0 && first <= last && last < sourceSize) {
+                        return new CopySourceRange(first, last);
+                    }
+                } catch (NumberFormatException e) {
+                    throw invalidCopySourceRange(header);
+                }
+            }
+            throw invalidCopySourceRange(header);
+        }
+
+        private static AwsException invalidCopySourceRange(String header) {
+            return new AwsException("InvalidArgument", "Invalid x-amz-copy-source-range: " + header, 400);
+        }
+    }
+
+    /** Reads exactly the bytes of {@code range} from {@code body}, skipping the bytes before it. */
+    static byte[] readRange(InputStream body, CopySourceRange range) throws IOException {
+        body.skipNBytes(range.first());
+        byte[] data = body.readNBytes((int) range.length());
+        if (data.length != range.length()) {
+            throw new IOException("Copy source ended " + (range.length() - data.length)
+                    + " bytes before the end of the requested range");
+        }
+        return data;
     }
 
     public S3Object completeMultipartUpload(String bucket, String key, String uploadId, List<Integer> partNumbers,
