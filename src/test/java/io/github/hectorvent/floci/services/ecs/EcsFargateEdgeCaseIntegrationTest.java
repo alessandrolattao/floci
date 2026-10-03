@@ -138,7 +138,7 @@ class EcsFargateEdgeCaseIntegrationTest {
                 container.formatted("gpu", "\"resourceRequirements\":[{\"type\":\"GPU\",\"value\":\"1\"}]"), 400)
                 .then().body("message", containsString("gpu"));
         call("RegisterTaskDefinition",
-                container.formatted("swap", "\"linuxParameters\":{\"maxSwap\":128}"), 400)
+                container.formatted("swap", "\"linuxParameters\":{\"maxSwap\":128,\"swappiness\":10}"), 400)
                 .then().body("message", containsString("maxSwap"));
         call("RegisterTaskDefinition",
                 container.formatted("swappiness", "\"linuxParameters\":{\"swappiness\":10}"), 400)
@@ -150,6 +150,71 @@ class EcsFargateEdgeCaseIntegrationTest {
                 + "\"placementConstraints\":[{\"type\":\"memberOf\",\"expression\":\"attribute:ecs.os-type==linux\"}],"
                 + "\"containerDefinitions\":[{\"name\":\"app\",\"image\":\"nginx:latest\"}]}", 400)
                 .then().body("message", containsString("placementConstraints"));
+    }
+
+    // Each message below is what RegisterTaskDefinition answered on AWS (eu-west-1, 2026-10-03),
+    // without a trailing period unless AWS writes one.
+    @Test
+    void fargateRefusesTheLinuxParametersItCannotHonour() {
+        String body = "{\"family\":\"edge-linux-%s\","
+                + "\"requiresCompatibilities\":[\"FARGATE\"],\"networkMode\":\"awsvpc\","
+                + "\"cpu\":\"256\",\"memory\":\"512\",\"containerDefinitions\":"
+                + "[{\"name\":\"app\",\"image\":\"nginx:latest\",\"linuxParameters\":%s}]}";
+
+        call("RegisterTaskDefinition", body.formatted("devices", "{\"devices\":[{\"hostPath\":\"/dev/null\"}]}"), 400)
+                .then().body("message", equalTo("Fargate compatible task definitions do not support devices"));
+        call("RegisterTaskDefinition", body.formatted("shm", "{\"sharedMemorySize\":64}"), 400)
+                .then().body("message", equalTo("Fargate compatible task definitions do not support sharedMemorySize"));
+        call("RegisterTaskDefinition", body.formatted("swap", "{\"maxSwap\":10,\"swappiness\":10}"), 400)
+                .then().body("message", equalTo("Fargate compatible task definitions do not support maxSwap"));
+        call("RegisterTaskDefinition", body.formatted("swappiness", "{\"swappiness\":10}"), 400)
+                .then().body("message", equalTo("Fargate compatible task definitions do not support swappiness"));
+        call("RegisterTaskDefinition", body.formatted("netadmin",
+                "{\"capabilities\":{\"add\":[\"SYS_PTRACE\",\"NET_ADMIN\",\"SYS_ADMIN\"]}}"), 400)
+                .then().body("message", equalTo("NET_ADMIN is not allowed on Fargate."));
+        // Fargate's one capability is matched as written: in lower case it is refused by name.
+        call("RegisterTaskDefinition", body.formatted("lowerptrace", "{\"capabilities\":{\"add\":[\"sys_ptrace\"]}}"), 400)
+                .then().body("message", equalTo("sys_ptrace is not allowed on Fargate."));
+
+        // The first rule a definition breaks is the one reported, in this order.
+        call("RegisterTaskDefinition", body.formatted("order1", "{\"devices\":[{\"hostPath\":\"/dev/null\"}],"
+                + "\"sharedMemorySize\":64,\"capabilities\":{\"add\":[\"NET_ADMIN\"]}}"), 400)
+                .then().body("message", equalTo("Fargate compatible task definitions do not support devices"));
+        call("RegisterTaskDefinition", body.formatted("order2", "{\"swappiness\":10,\"sharedMemorySize\":64}"), 400)
+                .then().body("message", equalTo("Fargate compatible task definitions do not support sharedMemorySize"));
+        call("RegisterTaskDefinition", body.formatted("order3",
+                "{\"swappiness\":10,\"capabilities\":{\"add\":[\"NET_ADMIN\"]}}"), 400)
+                .then().body("message", equalTo("Fargate compatible task definitions do not support swappiness"));
+
+        call("RegisterTaskDefinition", body.formatted("nodevices", "{\"devices\":[]}"), 200);
+        call("RegisterTaskDefinition", body.formatted("ptrace",
+                "{\"capabilities\":{\"add\":[\"SYS_PTRACE\"],\"drop\":[\"net_raw\",\"ALL\"]}}"), 200);
+        call("RegisterTaskDefinition", body.formatted("init",
+                "{\"initProcessEnabled\":true,\"tmpfs\":[{\"containerPath\":\"/t\",\"size\":16}]}"), 200);
+    }
+
+    @Test
+    void linuxParametersAreCheckedWhateverTheLaunchType() {
+        String body = "{\"family\":\"edge-linux-ec2-%s\",\"requiresCompatibilities\":[\"EC2\"],"
+                + "\"networkMode\":\"bridge\",\"memory\":\"512\",\"containerDefinitions\":"
+                + "[{\"name\":\"app\",\"image\":\"nginx:latest\",\"linuxParameters\":%s}]}";
+
+        call("RegisterTaskDefinition", body.formatted("swap", "{\"maxSwap\":10}"), 400)
+                .then().body("message",
+                        equalTo("When a container has a swap memory, it must also specify a swappiness value."));
+        call("RegisterTaskDefinition", body.formatted("capprefix", "{\"capabilities\":{\"add\":[\"CAP_NET_ADMIN\"]}}"), 400)
+                .then().body("message", equalTo("Unrecognized Linux capabilities in add: [CAP_NET_ADMIN]"));
+        call("RegisterTaskDefinition", body.formatted("unknowndrop", "{\"capabilities\":{\"drop\":[\"FOO\"]}}"), 400)
+                .then().body("message", equalTo("Unrecognized Linux capabilities in drop: [FOO]"));
+        call("RegisterTaskDefinition", body.formatted("lower", "{\"capabilities\":{\"add\":[\"net_admin\"]}}"), 200);
+
+        // The swap rule comes before Fargate's own, which would otherwise name maxSwap.
+        call("RegisterTaskDefinition", "{\"family\":\"edge-linux-fargate-swap\","
+                + "\"requiresCompatibilities\":[\"FARGATE\"],\"networkMode\":\"awsvpc\","
+                + "\"cpu\":\"256\",\"memory\":\"512\",\"containerDefinitions\":"
+                + "[{\"name\":\"app\",\"image\":\"nginx:latest\",\"linuxParameters\":{\"maxSwap\":10}}]}", 400)
+                .then().body("message",
+                        equalTo("When a container has a swap memory, it must also specify a swappiness value."));
     }
 
     @Test

@@ -66,7 +66,7 @@ A task definition round-trips whole. Members Floci acts on are modelled
 (`ephemeralStorage`, `pidMode`, `ipcMode`, `runtimePlatform`, and at container level `dependsOn`,
 `startTimeout`, `stopTimeout`, `user`, `workingDirectory`, `readonlyRootFilesystem`,
 `environmentFiles`, `dockerLabels`, `repositoryCredentials` and the rest); everything else,
-such as `proxyConfiguration`, `linuxParameters`, `ulimits`, `resourceRequirements`,
+such as `proxyConfiguration`, `ulimits`, `resourceRequirements`,
 `systemControls` and placement constraints, is kept verbatim and returned as registered. A client
 that reads back what it wrote (Terraform, or a deploy tool verifying its own
 `RegisterTaskDefinition`) sees no drift. `runtimePlatform` does not change where a local task
@@ -228,8 +228,15 @@ at registration:
 - None of the parameters that are not valid in a Fargate task: `disableNetworking`,
   `dnsSearchDomains`, `dnsServers`, `dockerSecurityOptions`, `extraHosts`, a `GPU`
   `resourceRequirements` entry, `ipcMode`, `links`, `placementConstraints`, `privileged`,
-  `linuxParameters.maxSwap`, `linuxParameters.swappiness`, a `pidMode` other than `task`, or a
-  host volume with a `sourcePath`. All of them are accepted on an EC2-compatible definition.
+  `linuxParameters.devices` (an empty list passes), `linuxParameters.sharedMemorySize`,
+  `linuxParameters.maxSwap`, `linuxParameters.swappiness`, a `linuxParameters.capabilities.add`
+  entry other than `SYS_PTRACE` as written (`sys_ptrace` is refused by name), a `pidMode` other
+  than `task`, or a host volume with a `sourcePath`. All of them are accepted on an EC2-compatible
+  definition. The `linuxParameters` among them are checked in that order, with AWS's messages.
+- Whatever the launch type: `linuxParameters.maxSwap` only with a `swappiness`, and every
+  `capabilities` entry one of the names the KernelCapabilities reference lists, in any case and
+  without a `CAP_` prefix (`Unrecognized Linux capabilities in add: [CAP_NET_ADMIN]`). These come
+  before the Fargate rules.
 - A `dependsOn` graph that names only containers of the same task definition and has no cycle.
 
 A launched Fargate task reports what AWS reports: `platformVersion` (with `LATEST` resolved to a

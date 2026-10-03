@@ -691,6 +691,7 @@ public class EcsService implements ContainerTeardown, ResourceProvider, Resettab
         validateEphemeralStorage(request.getEphemeralStorage());
         validateContainerDependencies(containerDefs);
         validateFirelensS3Config(containerDefs, fargate);
+        validateLinuxParameters(containerDefs);
         if (fargate) {
             validateFargateUnsupportedParameters(request);
         }
@@ -961,6 +962,18 @@ public class EcsService implements ContainerTeardown, ResourceProvider, Resettab
         }
     }
 
+    /** The one capability a Fargate container may add (KernelCapabilities, "add"). */
+    private static final String FARGATE_CAPABILITY = "SYS_PTRACE";
+
+    /** The values KernelCapabilities lists for {@code add} and {@code drop}. */
+    private static final Set<String> KERNEL_CAPABILITIES = Set.of(
+            "ALL", "AUDIT_CONTROL", "AUDIT_WRITE", "BLOCK_SUSPEND", "CHOWN", "DAC_OVERRIDE",
+            "DAC_READ_SEARCH", "FOWNER", "FSETID", "IPC_LOCK", "IPC_OWNER", "KILL", "LEASE",
+            "LINUX_IMMUTABLE", "MAC_ADMIN", "MAC_OVERRIDE", "MKNOD", "NET_ADMIN", "NET_BIND_SERVICE",
+            "NET_BROADCAST", "NET_RAW", "SETFCAP", "SETGID", "SETPCAP", "SETUID", "SYS_ADMIN",
+            "SYS_BOOT", "SYS_CHROOT", "SYS_MODULE", "SYS_NICE", "SYS_PACCT", "SYS_PTRACE", "SYS_RAWIO",
+            "SYS_RESOURCE", "SYS_TIME", "SYS_TTY_CONFIG", "SYSLOG", "WAKE_ALARM");
+
     private static void rejectOnFargate(boolean present, String parameter) {
         if (present) {
             throw new AwsException("ClientException",
@@ -968,15 +981,84 @@ public class EcsService implements ContainerTeardown, ResourceProvider, Resettab
         }
     }
 
-    /** {@code maxSwap} and {@code swappiness} have no meaning on Fargate's managed kernel. */
-    @SuppressWarnings("unchecked")
+    /**
+     * The {@code linuxParameters} Fargate cannot honour, in the order RegisterTaskDefinition
+     * checks them on AWS: host devices, the shared memory size, swap, then any capability but
+     * {@code SYS_PTRACE}, the only one Fargate adds, matched as written. AWS words these without
+     * the trailing period its other Fargate refusals carry.
+     */
     private static void validateFargateLinuxParameters(ContainerDefinition def) {
-        Object linuxParameters = def.getUnparsed() == null ? null : def.getUnparsed().get("linuxParameters");
-        if (!(linuxParameters instanceof Map<?, ?> parameters)) {
+        Map<?, ?> parameters = linuxParameters(def);
+        if (parameters == null) {
             return;
         }
-        rejectOnFargate(parameters.get("maxSwap") != null, "maxSwap");
-        rejectOnFargate(parameters.get("swappiness") != null, "swappiness");
+        rejectLinuxParameterOnFargate(parameters.get("devices") instanceof Collection<?> devices
+                && !devices.isEmpty(), "devices");
+        rejectLinuxParameterOnFargate(parameters.get("sharedMemorySize") != null, "sharedMemorySize");
+        rejectLinuxParameterOnFargate(parameters.get("maxSwap") != null, "maxSwap");
+        rejectLinuxParameterOnFargate(parameters.get("swappiness") != null, "swappiness");
+        for (String capability : capabilities(parameters, "add")) {
+            if (!FARGATE_CAPABILITY.equals(capability)) {
+                throw new AwsException("ClientException", capability + " is not allowed on Fargate.", 400);
+            }
+        }
+    }
+
+    private static void rejectLinuxParameterOnFargate(boolean present, String parameter) {
+        if (present) {
+            throw new AwsException("ClientException",
+                    "Fargate compatible task definitions do not support " + parameter, 400);
+        }
+    }
+
+    /**
+     * The {@code linuxParameters} rules RegisterTaskDefinition applies whatever the launch type,
+     * before Fargate's own: swap needs a swappiness, and every capability must be one the
+     * KernelCapabilities reference lists, in any case and without the {@code CAP_} prefix.
+     */
+    private static void validateLinuxParameters(List<ContainerDefinition> containerDefs) {
+        if (containerDefs == null) {
+            return;
+        }
+        for (ContainerDefinition def : containerDefs) {
+            Map<?, ?> parameters = linuxParameters(def);
+            if (parameters == null) {
+                continue;
+            }
+            for (String list : List.of("add", "drop")) {
+                List<String> unrecognized = new ArrayList<>();
+                for (String capability : capabilities(parameters, list)) {
+                    if (!KERNEL_CAPABILITIES.contains(capability.toUpperCase(Locale.ROOT))) {
+                        unrecognized.add(capability);
+                    }
+                }
+                if (!unrecognized.isEmpty()) {
+                    throw new AwsException("ClientException",
+                            "Unrecognized Linux capabilities in " + list + ": " + unrecognized, 400);
+                }
+            }
+            if (parameters.get("maxSwap") != null && parameters.get("swappiness") == null) {
+                throw new AwsException("ClientException",
+                        "When a container has a swap memory, it must also specify a swappiness value.", 400);
+            }
+        }
+    }
+
+    private static Map<?, ?> linuxParameters(ContainerDefinition def) {
+        Object linuxParameters = def.getUnparsed() == null ? null : def.getUnparsed().get("linuxParameters");
+        return linuxParameters instanceof Map<?, ?> parameters ? parameters : null;
+    }
+
+    private static List<String> capabilities(Map<?, ?> parameters, String list) {
+        if (!(parameters.get("capabilities") instanceof Map<?, ?> capabilities)
+                || !(capabilities.get(list) instanceof Collection<?> names)) {
+            return List.of();
+        }
+        List<String> out = new ArrayList<>();
+        for (Object name : names) {
+            out.add(String.valueOf(name));
+        }
+        return out;
     }
 
     /** A Fargate task cannot ask for a GPU; only {@code InferenceAccelerator} requirements remain. */
