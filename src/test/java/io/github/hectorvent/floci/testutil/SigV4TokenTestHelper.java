@@ -2,7 +2,6 @@ package io.github.hectorvent.floci.testutil;
 
 import javax.crypto.Mac;
 import javax.crypto.spec.SecretKeySpec;
-import java.net.URLEncoder;
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.time.Instant;
@@ -177,7 +176,7 @@ public final class SigV4TokenTestHelper {
 
         List<String> encodedPairs = new ArrayList<>();
         for (Map.Entry<String, String> entry : queryParams.entrySet()) {
-            encodedPairs.add(entry.getKey() + "=" + urlEncode(entry.getValue()));
+            encodedPairs.add(entry.getKey() + "=" + uriEncode(entry.getValue()));
         }
 
         String canonicalQuery = encodedPairs.stream()
@@ -212,8 +211,24 @@ public final class SigV4TokenTestHelper {
         return eq >= 0 ? rawPair.substring(0, eq) : rawPair;
     }
 
-    private static String urlEncode(String value) {
-        return URLEncoder.encode(value, StandardCharsets.UTF_8);
+    /**
+     * SigV4's UriEncode, as the AWS SDK presigners apply it to every query value: RFC 3986, with
+     * only {@code A-Z a-z 0-9 - . _ ~} left as they are and uppercase hex. Not {@code URLEncoder},
+     * whose form encoding writes a space as {@code +} and leaves {@code *} unescaped.
+     */
+    private static String uriEncode(String value) {
+        StringBuilder encoded = new StringBuilder(value.length());
+        for (byte raw : value.getBytes(StandardCharsets.UTF_8)) {
+            int unsigned = Byte.toUnsignedInt(raw);
+            if ((unsigned >= 'A' && unsigned <= 'Z') || (unsigned >= 'a' && unsigned <= 'z')
+                    || (unsigned >= '0' && unsigned <= '9') || unsigned == '-' || unsigned == '.'
+                    || unsigned == '_' || unsigned == '~') {
+                encoded.append((char) unsigned);
+            } else {
+                encoded.append('%').append(String.format("%02X", unsigned));
+            }
+        }
+        return encoded.toString();
     }
 
     private static byte[] deriveSigningKey(String secretKey, String date, String region,

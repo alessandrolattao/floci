@@ -515,6 +515,29 @@ class RdsSigV4ValidatorTest {
                 "Validator must accept RDS IAM tokens signed with STS session credentials (ASIA… keys)");
     }
 
+    /**
+     * What every Lambda that connects with IAM authentication sends: a token presigned with the
+     * function's execution-role credentials, whose session token carries {@code +}, {@code /} and
+     * {@code =}.
+     */
+    @Test
+    void validateAcceptsTokenSignedWithLambdaSessionCredentials() throws Exception {
+        String accessKeyId = "ASIAIOSFODNN7EXAMPLE";
+        String secretAccessKey = "lambda+session/secret";
+        String sessionToken = "IQoJb3JpZ2luX2VjEJr+abc/def+ghi/jkl==";
+        IamService iamService = IamServiceTestHelper.iamServiceWithSessionCredential(
+                accessKeyId, secretAccessKey, sessionToken, Instant.now().plusSeconds(3600));
+        RdsSigV4Validator validator = new RdsSigV4Validator(iamService);
+
+        String token = SigV4TokenTestHelper.createRdsToken(
+                "db.example.local", 3307, "admin", accessKeyId, secretAccessKey,
+                Instant.now().minusSeconds(60), 900, sessionToken);
+
+        assertTrue(validator.validate(token, "admin", exampleBinding()));
+        assertFalse(validator.validate(token.replace("%2B", "%20"), "admin", exampleBinding()),
+                "a token whose session token reads a space where the issued one has a + is another token");
+    }
+
     @Test
     void validateRejectsStsCredentialWithoutIssuedSessionToken() throws Exception {
         String accessKeyId = "ASIAIOSFODNN7EXAMPLE";
