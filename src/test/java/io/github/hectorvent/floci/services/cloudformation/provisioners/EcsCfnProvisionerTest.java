@@ -22,6 +22,7 @@ import org.mockito.InOrder;
 
 import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.Set;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
@@ -182,6 +183,83 @@ class EcsCfnProvisionerTest {
         assertEquals("s3", def.getLogConfiguration().options().get("Name"));
         assertEquals("logs", def.getLogConfiguration().options().get("bucket"));
         assertEquals("fluentbit", def.getFirelensConfiguration().type());
+    }
+
+    @Test
+    void containerLinuxParametersReachTheTaskDefinitionInTheApiShape() {
+        TaskDefinition td = new TaskDefinition();
+        td.setTaskDefinitionArn(TASK_DEF_ARN);
+        when(ecs.registerTaskDefinition(anyString(), anyList(), any(), any(), any(), any(), any(), anyList(),
+                eq(REGION))).thenReturn(td);
+
+        ObjectNode props = mapper.createObjectNode().put("Family", "web");
+        ObjectNode container = props.putArray("ContainerDefinitions").addObject()
+                .put("Name", "app").put("Image", "nginx:1");
+        ObjectNode linux = container.putObject("LinuxParameters")
+                .put("InitProcessEnabled", true).put("MaxSwap", 512).put("SharedMemorySize", 256)
+                .put("Swappiness", 10);
+        ObjectNode capabilities = linux.putObject("Capabilities");
+        capabilities.putArray("Add").add("SYS_PTRACE");
+        capabilities.putArray("Drop").add("NET_RAW").add("MKNOD");
+        ObjectNode device = linux.putArray("Devices").addObject()
+                .put("HostPath", "/dev/fuse").put("ContainerPath", "/dev/fuse");
+        device.putArray("Permissions").add("read").add("write");
+        ObjectNode tmpfs = linux.putArray("Tmpfs").addObject().put("ContainerPath", "/scratch").put("Size", 64);
+        tmpfs.putArray("MountOptions").add("noexec").add("nosuid");
+
+        provisioner.provision(resource("AWS::ECS::TaskDefinition", "TaskDef"), props, ctx());
+
+        assertEquals(Map.of("linuxParameters", Map.of(
+                        "capabilities", Map.of("add", List.of("SYS_PTRACE"), "drop", List.of("NET_RAW", "MKNOD")),
+                        "devices", List.of(Map.of("hostPath", "/dev/fuse", "containerPath", "/dev/fuse",
+                                "permissions", List.of("read", "write"))),
+                        "initProcessEnabled", true,
+                        "maxSwap", 512,
+                        "sharedMemorySize", 256,
+                        "swappiness", 10,
+                        "tmpfs", List.of(Map.of("containerPath", "/scratch", "mountOptions", List.of("noexec", "nosuid"),
+                                "size", 64)))),
+                registeredContainer().getUnparsed());
+    }
+
+    @Test
+    void linuxParametersThatAReferenceResolvedToTextAreReadAsTheTypesTheTemplateMeans() {
+        TaskDefinition td = new TaskDefinition();
+        td.setTaskDefinitionArn(TASK_DEF_ARN);
+        when(ecs.registerTaskDefinition(anyString(), anyList(), any(), any(), any(), any(), any(), anyList(),
+                eq(REGION))).thenReturn(td);
+
+        ObjectNode props = mapper.createObjectNode().put("Family", "web");
+        props.putArray("ContainerDefinitions").addObject().put("Name", "app").put("Image", "nginx:1")
+                .putObject("LinuxParameters").put("InitProcessEnabled", "true").put("SharedMemorySize", "128");
+
+        provisioner.provision(resource("AWS::ECS::TaskDefinition", "TaskDef"), props, ctx());
+
+        assertEquals(Map.of("linuxParameters", Map.of("initProcessEnabled", true, "sharedMemorySize", 128)),
+                registeredContainer().getUnparsed());
+    }
+
+    @Test
+    void aContainerWithoutLinuxParametersCarriesNone() {
+        TaskDefinition td = new TaskDefinition();
+        td.setTaskDefinitionArn(TASK_DEF_ARN);
+        when(ecs.registerTaskDefinition(anyString(), anyList(), any(), any(), any(), any(), any(), anyList(),
+                eq(REGION))).thenReturn(td);
+
+        ObjectNode props = mapper.createObjectNode().put("Family", "web");
+        props.putArray("ContainerDefinitions").addObject().put("Name", "app").put("Image", "nginx:1");
+
+        provisioner.provision(resource("AWS::ECS::TaskDefinition", "TaskDef"), props, ctx());
+
+        assertNull(registeredContainer().getUnparsed());
+    }
+
+    private ContainerDefinition registeredContainer() {
+        @SuppressWarnings("unchecked")
+        ArgumentCaptor<List<ContainerDefinition>> defs = ArgumentCaptor.forClass(List.class);
+        verify(ecs).registerTaskDefinition(anyString(), defs.capture(), any(), any(), any(), any(), any(),
+                anyList(), eq(REGION));
+        return defs.getValue().get(0);
     }
 
     @Test
