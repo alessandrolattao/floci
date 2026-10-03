@@ -65,8 +65,8 @@ instances and stop the tasks first, as on AWS.
 A task definition round-trips whole. Members Floci acts on are modelled
 (`ephemeralStorage`, `pidMode`, `ipcMode`, `runtimePlatform`, and at container level `dependsOn`,
 `startTimeout`, `stopTimeout`, `user`, `workingDirectory`, `readonlyRootFilesystem`,
-`environmentFiles`, `dockerLabels`, `repositoryCredentials` and the rest); everything else it does
-not act on, such as `proxyConfiguration`, `linuxParameters`, `ulimits`, `resourceRequirements`,
+`environmentFiles`, `dockerLabels`, `repositoryCredentials` and the rest); everything else,
+such as `proxyConfiguration`, `linuxParameters`, `ulimits`, `resourceRequirements`,
 `systemControls` and placement constraints, is kept verbatim and returned as registered. A client
 that reads back what it wrote (Terraform, or a deploy tool verifying its own
 `RegisterTaskDefinition`) sees no drift. `runtimePlatform` does not change where a local task
@@ -123,6 +123,20 @@ the task's; the task's `cpu` becomes a CPU quota. `stopTimeout` is the grace per
 on teardown; a container that does not ask for one gets 5 seconds rather than AWS's 30, because
 `StopTask` here answers synchronously and most containers ignore SIGTERM as PID 1. A container
 still running when its grace period is up is killed, so its exit code is always reported.
+
+A container's `linuxParameters` reach Docker as ECS documents them. `initProcessEnabled` runs an
+init process as PID 1 (`docker run --init`) that forwards signals and reaps orphaned processes;
+`capabilities` are added and dropped (`--cap-add`, `--cap-drop`); each of `devices` is exposed
+(`--device`), with read, write and mknod when it names no `permissions` and at its `hostPath` when
+it names no `containerPath`; `sharedMemorySize` sizes `/dev/shm` in MiB (`--shm-size`); each of
+`tmpfs` is mounted at its `containerPath` with its `mountOptions` and `size` in MiB (`--tmpfs`);
+`maxSwap` caps memory plus swap at the container's hard limit plus that many MiB (`--memory-swap`,
+so `0` means no swap), and `swappiness` (`--memory-swappiness`) defaults to 60 with `maxSwap` and is
+ignored without it. A container with no hard limit, neither its own `memory` nor the task's, gets
+no swap limit, because Docker cannot limit swap without one. A daemon on cgroup v2 discards
+`swappiness`, as Amazon Linux 2023 does. Inside a task behind a security group, `NET_ADMIN` and
+`NET_RAW` stay dropped whatever `capabilities` adds, because the group is enforced in the network
+namespace the task's containers share.
 
 `firelensConfiguration` is stored and returned the same way. `RegisterTaskDefinition` rejects a
 missing or unsupported `type` (`fluentd` and `fluentbit` only), and a task using `awsfirelens`

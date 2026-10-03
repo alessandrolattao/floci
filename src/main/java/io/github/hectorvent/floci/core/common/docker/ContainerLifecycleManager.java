@@ -38,8 +38,10 @@ import java.io.ByteArrayOutputStream;
 import java.io.Closeable;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.Optional;
 import java.util.OptionalInt;
@@ -1085,6 +1087,30 @@ public class ContainerLifecycleManager {
         }
     }
 
+    /**
+     * Capability names as a task definition or a caller gives them, with or without the
+     * {@code CAP_} prefix and in any case. A name Docker does not know fails the create, as
+     * {@code docker run --cap-add} does.
+     */
+    private static List<Capability> capabilities(List<String> names) {
+        List<Capability> result = new ArrayList<>();
+        for (String name : names) {
+            String normalized = name.trim().toUpperCase(Locale.ROOT);
+            if (normalized.startsWith("CAP_")) {
+                normalized = normalized.substring("CAP_".length());
+            }
+            try {
+                Capability capability = Capability.valueOf(normalized);
+                if (!result.contains(capability)) {
+                    result.add(capability);
+                }
+            } catch (IllegalArgumentException e) {
+                throw new IllegalArgumentException("Unknown Linux capability: " + name, e);
+            }
+        }
+        return result;
+    }
+
     private HostConfig buildHostConfig(ContainerSpec spec) {
         HostConfig hostConfig = HostConfig.newHostConfig();
 
@@ -1092,15 +1118,47 @@ public class ContainerLifecycleManager {
         if (spec.privileged()) {
             hostConfig.withPrivileged(true);
         }
+        LinuxOptions linux = spec.linuxOptions();
+        List<Capability> capDrop = new ArrayList<>();
+        List<Capability> capAdd = capabilities(linux.capAdd());
         if ("true".equals(ContainerStorageHelper.labelValue(
                 spec.labels(), ContainerStorageHelper.SECURITY_GROUP_WORKLOAD_LABEL))) {
-            hostConfig.withCapDrop(Capability.NET_ADMIN, Capability.NET_RAW);
+            // The security group is enforced inside the namespace the workload shares, so the
+            // workload must not be able to rewrite it, whatever capabilities it asks for. Docker
+            // applies a named add over a drop, so the two are taken out of the adds as well.
+            capDrop.add(Capability.NET_ADMIN);
+            capDrop.add(Capability.NET_RAW);
+            capAdd.removeAll(capDrop);
+        }
+        for (Capability capability : capabilities(linux.capDrop())) {
+            if (!capDrop.contains(capability)) {
+                capDrop.add(capability);
+            }
         }
         // The firewall helper only has to program nftables in the namespace it already owns,
         // which needs CAP_NET_ADMIN and nothing else that privileged mode would also grant.
         if ("true".equals(ContainerStorageHelper.labelValue(
-                spec.labels(), ContainerStorageHelper.SECURITY_GROUP_HELPER_LABEL))) {
-            hostConfig.withCapAdd(Capability.NET_ADMIN);
+                spec.labels(), ContainerStorageHelper.SECURITY_GROUP_HELPER_LABEL))
+                && !capAdd.contains(Capability.NET_ADMIN)) {
+            capAdd.add(Capability.NET_ADMIN);
+        }
+        if (!capDrop.isEmpty()) {
+            hostConfig.withCapDrop(capDrop.toArray(new Capability[0]));
+        }
+        if (!capAdd.isEmpty()) {
+            hostConfig.withCapAdd(capAdd.toArray(new Capability[0]));
+        }
+        if (linux.init()) {
+            hostConfig.withInit(true);
+        }
+        if (!linux.devices().isEmpty()) {
+            hostConfig.withDevices(linux.devices());
+        }
+        if (linux.shmSizeBytes() != null) {
+            hostConfig.withShmSize(linux.shmSizeBytes());
+        }
+        if (!linux.tmpfs().isEmpty()) {
+            hostConfig.withTmpFs(linux.tmpfs());
         }
 
         if (spec.cgroupnsMode() != null && !spec.cgroupnsMode().isBlank()) {
@@ -1116,6 +1174,12 @@ public class ContainerLifecycleManager {
         // Memory limit
         if (spec.hasMemoryLimit()) {
             hostConfig.withMemory(spec.memoryBytes());
+        }
+        if (linux.memorySwapBytes() != null) {
+            hostConfig.withMemorySwap(linux.memorySwapBytes());
+        }
+        if (linux.memorySwappiness() != null) {
+            hostConfig.withMemorySwappiness(linux.memorySwappiness());
         }
 
         // CPU quota and weight

@@ -2,6 +2,7 @@ package io.github.hectorvent.floci.core.common.docker;
 
 import com.github.dockerjava.api.model.AccessMode;
 import com.github.dockerjava.api.model.Bind;
+import com.github.dockerjava.api.model.Device;
 import com.github.dockerjava.api.model.DeviceRequest;
 import com.github.dockerjava.api.model.LogConfig;
 import com.github.dockerjava.api.model.Mount;
@@ -169,6 +170,14 @@ public class ContainerBuilder {
         private final List<String> dnsServers = new ArrayList<>();
         private final List<String> linkLocalIps = new ArrayList<>();
         private final List<DeviceRequest> deviceRequests = new ArrayList<>();
+        private boolean init;
+        private final List<String> capAdd = new ArrayList<>();
+        private final List<String> capDrop = new ArrayList<>();
+        private final List<Device> devices = new ArrayList<>();
+        private Long shmSizeBytes;
+        private final Map<String, String> tmpfs = new HashMap<>();
+        private Long memorySwapBytes;
+        private Long memorySwappiness;
 
         Builder(String image, EmulatorConfig config, DockerHostResolver dockerHostResolver,
                 EmbeddedDnsServer embeddedDnsServer,
@@ -609,6 +618,77 @@ public class ContainerBuilder {
             return this;
         }
 
+        /**
+         * Runs an init process as PID 1 that forwards signals and reaps orphaned processes, the
+         * equivalent of {@code docker run --init}.
+         */
+        public Builder withInit() {
+            this.init = true;
+            return this;
+        }
+
+        /**
+         * Adds a capability to the daemon's default set ({@code --cap-add}), named without the
+         * {@code CAP_} prefix, or {@code ALL}.
+         */
+        public Builder withCapAdd(String capability) {
+            this.capAdd.add(capability);
+            return this;
+        }
+
+        /**
+         * Drops a capability from the daemon's default set ({@code --cap-drop}), named without the
+         * {@code CAP_} prefix, or {@code ALL}.
+         */
+        public Builder withCapDrop(String capability) {
+            this.capDrop.add(capability);
+            return this;
+        }
+
+        /**
+         * Exposes a host device inside the container ({@code --device}).
+         *
+         * @param cgroupPermissions any of {@code r}, {@code w} and {@code m}, as Docker takes them
+         */
+        public Builder withDevice(String hostPath, String containerPath, String cgroupPermissions) {
+            this.devices.add(new Device(cgroupPermissions, containerPath, hostPath));
+            return this;
+        }
+
+        /**
+         * Sets the size of {@code /dev/shm} ({@code --shm-size}).
+         */
+        public Builder withShmSizeBytes(long shmSizeBytes) {
+            this.shmSizeBytes = shmSizeBytes;
+            return this;
+        }
+
+        /**
+         * Mounts a tmpfs at {@code containerPath} ({@code --tmpfs}), with Docker's option string,
+         * such as {@code "noexec,size=64m"}.
+         */
+        public Builder withTmpfs(String containerPath, String options) {
+            this.tmpfs.put(containerPath, options);
+            return this;
+        }
+
+        /**
+         * Caps memory plus swap ({@code --memory-swap}); a value equal to the memory limit means
+         * the container does not swap.
+         */
+        public Builder withMemorySwapBytes(long memorySwapBytes) {
+            this.memorySwapBytes = memorySwapBytes;
+            return this;
+        }
+
+        /**
+         * Sets the container's swappiness, 0 to 100 ({@code --memory-swappiness}).
+         */
+        public Builder withMemorySwappiness(long memorySwappiness) {
+            this.memorySwappiness = memorySwappiness;
+            return this;
+        }
+
         private void requireNoExistingDeviceRequest() {
             if (!deviceRequests.isEmpty()) {
                 throw new IllegalStateException(
@@ -690,7 +770,9 @@ public class ContainerBuilder {
                     cpuShares,
                     readonlyRootfs,
                     List.copyOf(linkLocalIps),
-                    Map.copyOf(portBindingHostIps)
+                    Map.copyOf(portBindingHostIps),
+                    new LinuxOptions(init, List.copyOf(capAdd), List.copyOf(capDrop), List.copyOf(devices),
+                            shmSizeBytes, Map.copyOf(tmpfs), memorySwapBytes, memorySwappiness)
             );
         }
     }

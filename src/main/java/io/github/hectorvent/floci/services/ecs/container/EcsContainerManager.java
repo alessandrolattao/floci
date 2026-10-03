@@ -392,6 +392,8 @@ public class EcsContainerManager {
                 if (Boolean.TRUE.equals(def.getReadonlyRootFilesystem())) {
                     specBuilder.withReadonlyRootfs();
                 }
+                EcsLinuxParameters.apply(specBuilder, def,
+                        def.getMemory() != null ? def.getMemory() : parseTaskMemoryMb(task.getMemory()));
 
                 // Add port mappings. In bridge/host mode an explicit hostPort is
                 // published to the Docker host literally, matching AWS bridge mode
