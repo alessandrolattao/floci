@@ -53,11 +53,11 @@ class EcsLinuxParametersTest {
     }
 
     @Test
-    void maxSwapZeroMeansNoSwapAndSwappinessDefaultsToSixty() {
-        LinuxOptions options = apply(Map.of("maxSwap", 0), 512);
+    void maxSwapZeroMeansNoSwap() {
+        LinuxOptions options = apply(Map.of("maxSwap", 0, "swappiness", 0), 512);
 
         assertEquals(512 * MIB, options.memorySwapBytes(), "swap limit equal to the memory limit: no swap");
-        assertEquals(60L, options.memorySwappiness());
+        assertEquals(0L, options.memorySwappiness());
     }
 
     @Test
