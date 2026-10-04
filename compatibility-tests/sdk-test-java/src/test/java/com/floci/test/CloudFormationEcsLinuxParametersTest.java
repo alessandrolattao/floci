@@ -5,6 +5,7 @@ import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import software.amazon.awssdk.services.cloudformation.CloudFormationClient;
+import software.amazon.awssdk.services.cloudformation.model.CloudFormationException;
 import software.amazon.awssdk.services.cloudformation.model.DescribeStacksRequest;
 import software.amazon.awssdk.services.cloudformation.model.Stack;
 import software.amazon.awssdk.services.cloudformation.model.StackEvent;
@@ -36,20 +37,22 @@ class CloudFormationEcsLinuxParametersTest {
         ecs = TestFixtures.ecsClient();
     }
 
+    /**
+     * Deletes each stack a test asked for and waits until it is gone, so no stack or task
+     * definition outlives the run; a delete that fails or does not finish fails the cleanup.
+     */
     @AfterAll
-    static void cleanup() {
-        if (cloudFormation != null) {
-            for (String stack : STACKS) {
-                try {
-                    cloudFormation.deleteStack(r -> r.stackName(stack));
-                } catch (Exception e) {
-                    System.err.println("CloudFormation LinuxParameters cleanup skipped for " + stack + ": "
-                            + e.getMessage());
-                }
-            }
-            cloudFormation.close();
+    static void cleanup() throws InterruptedException {
+        if (cloudFormation == null || ecs == null) {
+            return;
         }
-        if (ecs != null) {
+        try {
+            for (String stack : STACKS) {
+                cloudFormation.deleteStack(r -> r.stackName(stack));
+                waitForDeleted(stack);
+            }
+        } finally {
+            cloudFormation.close();
             ecs.close();
         }
     }
@@ -100,6 +103,26 @@ class CloudFormationEcsLinuxParametersTest {
         List<StackEvent> events = cloudFormation.describeStackEvents(r -> r.stackName(name)).stackEvents();
         assertThat(events).anySatisfy(event -> assertThat(event.resourceStatusReason())
                 .contains("Fargate compatible task definitions do not support maxSwap"));
+    }
+
+    private static void waitForDeleted(String name) throws InterruptedException {
+        long deadline = System.currentTimeMillis() + 30_000L;
+        while (System.currentTimeMillis() < deadline) {
+            try {
+                List<Stack> stacks = cloudFormation.describeStacks(
+                        DescribeStacksRequest.builder().stackName(name).build()).stacks();
+                if (stacks.isEmpty() || "DELETE_COMPLETE".equals(stacks.get(0).stackStatusAsString())) {
+                    return;
+                }
+            } catch (CloudFormationException e) {
+                if (e.getMessage() != null && e.getMessage().contains("does not exist")) {
+                    return;
+                }
+                throw e;
+            }
+            Thread.sleep(500);
+        }
+        throw new AssertionError("Stack " + name + " was not deleted within 30s");
     }
 
     private static String waitForTerminal(String name) throws InterruptedException {
