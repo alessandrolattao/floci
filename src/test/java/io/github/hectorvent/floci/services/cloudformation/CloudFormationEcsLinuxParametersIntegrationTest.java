@@ -65,8 +65,10 @@ class CloudFormationEcsLinuxParametersIntegrationTest {
                   }
                 }
                 """;
+        boolean created = false;
         try {
             createStack(name, template.formatted(name));
+            created = true;
             assertEquals("CREATE_COMPLETE", CfnStackWaits.awaitTerminal(name).status());
 
         given().contentType(ECS_CT)
@@ -87,7 +89,9 @@ class CloudFormationEcsLinuxParametersIntegrationTest {
                 .body("taskDefinition.containerDefinitions[1].name", equalTo("plain"))
                 .body("taskDefinition.containerDefinitions[1]", not(hasKey("linuxParameters")));
         } finally {
-            deleteStack(name);
+            if (created) {
+                deleteStack(name);
+            }
         }
     }
 
@@ -113,11 +117,15 @@ class CloudFormationEcsLinuxParametersIntegrationTest {
                   }
                 }
                 """;
+        boolean created = false;
         try {
             createStack(name, template.formatted(name));
+            created = true;
             assertFargateSwapRefused(name, CfnStackWaits.awaitTerminal(name));
         } finally {
-            deleteStack(name);
+            if (created) {
+                deleteStack(name);
+            }
         }
     }
 
@@ -135,7 +143,8 @@ class CloudFormationEcsLinuxParametersIntegrationTest {
 
     /**
      * Each run names its stacks and families afresh, so it never meets a stack another run left,
-     * and removes them in a finally that also covers a create that failed.
+     * and removes the stack it created in a finally; a create that was refused leaves nothing to
+     * delete, so its failure is the one reported.
      */
     private static void deleteStack(String name) {
         given().contentType("application/x-www-form-urlencoded")
