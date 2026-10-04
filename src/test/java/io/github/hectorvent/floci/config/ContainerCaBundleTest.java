@@ -11,6 +11,7 @@ import org.junit.jupiter.api.io.TempDir;
 import java.io.ByteArrayInputStream;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.security.GeneralSecurityException;
 import java.security.cert.Certificate;
 import java.security.cert.CertificateFactory;
 import java.security.cert.X509Certificate;
@@ -99,6 +100,24 @@ class ContainerCaBundleTest {
 
         assertThrows(IllegalArgumentException.class, () -> ContainerCaBundle.write(tlsDir, notACertificate));
         assertFalse(Files.exists(tlsDir.resolve("floci-ca-bundle.pem")));
+    }
+
+    /**
+     * A bundle with no certificate in it would make a trust store that trusts nothing, and every
+     * HTTPS call through it would fail, public endpoints included. Floci's own clients fall back to
+     * the JVM's roots instead.
+     */
+    @Test
+    void sslContextIsEmptyForABundleWithNoCertificate() throws Exception {
+        Path tlsDir = Files.createDirectories(tempDir.resolve("tls"));
+        Files.writeString(tlsDir.resolve(ContainerCaBundle.FILE_NAME), "");
+        EmulatorConfig config = mock(EmulatorConfig.class, RETURNS_DEEP_STUBS);
+        when(config.tls().enabled()).thenReturn(true);
+        when(config.storage().persistentPath()).thenReturn(tempDir.toString());
+
+        assertEquals(Optional.empty(), ContainerCaBundle.sslContext(config));
+        assertThrows(GeneralSecurityException.class,
+                () -> ContainerCaBundle.sslContext(tlsDir.resolve(ContainerCaBundle.FILE_NAME)));
     }
 
     @Test

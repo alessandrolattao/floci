@@ -8,6 +8,8 @@ import com.sun.net.httpserver.HttpServer;
 import com.sun.net.httpserver.HttpsConfigurator;
 import com.sun.net.httpserver.HttpsServer;
 import io.github.hectorvent.floci.config.ContainerCaBundle;
+import io.github.hectorvent.floci.config.EmulatorConfig;
+import io.github.hectorvent.floci.config.TlsConfigSource;
 import io.github.hectorvent.floci.core.common.Pem;
 import io.github.hectorvent.floci.services.acm.CertificateGenerator;
 import io.github.hectorvent.floci.services.acm.model.KeyAlgorithm;
@@ -49,6 +51,9 @@ import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.mockito.Mockito.RETURNS_DEEP_STUBS;
+import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.when;
 
 /**
  * Verifies {@link JwtSignatureVerifier} against a real local OIDC discovery + JWKS server
@@ -82,6 +87,16 @@ class JwtSignatureVerifierTest {
 
         verifier = new JwtSignatureVerifier(objectMapper, SystemDefaultDnsResolver.INSTANCE, true);
         strictVerifier = new JwtSignatureVerifier(objectMapper, SystemDefaultDnsResolver.INSTANCE, false);
+    }
+
+    @BeforeEach
+    @AfterEach
+    void forgetBootstrapTlsDir() {
+        // TlsConfigSource.resolvedTlsDir is static: a TLS-on bootstrap run by another test class
+        // in this JVM would otherwise steer the bundle lookup at that test's directory.
+        System.setProperty("floci.tls.enabled", "false");
+        new TlsConfigSource();
+        System.clearProperty("floci.tls.enabled");
     }
 
     @AfterEach
@@ -267,15 +282,24 @@ class JwtSignatureVerifierTest {
         };
     }
 
+    /**
+     * With TLS on, the verifier Floci injects trusts the CA bundle it writes for its containers, so
+     * an issuer served with a certificate of that bundle verifies, where the JVM's roots alone
+     * refuse it. Goes through the configuration, as production does.
+     */
     @Test
-    void trustsAnIssuerCertificateFromTheCaBundleItIsGiven(@TempDir Path dir) throws Exception {
+    void trustsAnIssuerCertificateFromTheCaBundleFlociWrites(@TempDir Path dir) throws Exception {
         if (Security.getProvider(BouncyCastleProvider.PROVIDER_NAME) == null) {
             Security.addProvider(new BouncyCastleProvider());
         }
         CertificateGenerator.GeneratedCertificate generated = new CertificateGenerator()
                 .generateSelfSignedCertificate("localhost", List.of("localhost"), KeyAlgorithm.RSA_2048);
-        Path bundle = dir.resolve(ContainerCaBundle.FILE_NAME);
-        Files.writeString(bundle, generated.certificatePem());
+        Path tlsDir = Files.createDirectories(dir.resolve("tls"));
+        Files.writeString(tlsDir.resolve(ContainerCaBundle.FILE_NAME), generated.certificatePem());
+        EmulatorConfig config = mock(EmulatorConfig.class, RETURNS_DEEP_STUBS);
+        when(config.tls().enabled()).thenReturn(true);
+        when(config.storage().persistentPath()).thenReturn(dir.toString());
+        when(config.security().allowPrivateJwtTargets()).thenReturn(true);
 
         HttpsServer httpsServer = HttpsServer.create(new InetSocketAddress("127.0.0.1", 0), 0);
         httpsServer.setHttpsConfigurator(new HttpsConfigurator(serverSslContext(generated)));
@@ -283,8 +307,7 @@ class JwtSignatureVerifierTest {
         httpsServer.createContext("/.well-known/openid-configuration", discovery(httpsIssuer));
         httpsServer.createContext("/jwks", this::serveJwks);
         httpsServer.start();
-        try (JwtSignatureVerifier trustingVerifier = new JwtSignatureVerifier(objectMapper,
-                SystemDefaultDnsResolver.INSTANCE, true, ContainerCaBundle.sslContext(bundle))) {
+        try (JwtSignatureVerifier trustingVerifier = new JwtSignatureVerifier(objectMapper, config)) {
             String token = signToken("test-key-1", privateKey);
 
             assertThrows(JwtSignatureVerifier.JwtVerificationException.class,
