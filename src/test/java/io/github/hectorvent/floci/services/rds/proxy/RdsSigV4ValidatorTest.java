@@ -64,6 +64,24 @@ class RdsSigV4ValidatorTest {
                 "a valid token from a principal that is not allowed rds-db:connect must be rejected");
     }
 
+    /**
+     * The key IAM authorizes must be the key the signature was verified with. A token that spells
+     * its signer's credential with a percent-encoded name and adds a second credential, of a key
+     * IAM does not know, must not be authorized on that second key.
+     */
+    @Test
+    void validateAuthorizesTheKeyTheSignatureWasVerifiedWith() throws Exception {
+        IamService iamService = IamServiceTestHelper.iamServiceWithUserPolicy(
+                "AKIDRDS", "secret-rds", "jane", S3_ONLY_POLICY);
+        RdsSigV4Validator validator = new RdsSigV4Validator(iamService, () -> true);
+        String token = SigV4TokenTestHelper.createRdsTokenWithASecondCredential(
+                "db.example.local", 3307, "jane_doe", "AKIDRDS", "secret-rds", "AKIDUNKNOWN",
+                Instant.now().minusSeconds(60), 900);
+
+        assertFalse(validator.validate(token, "jane_doe", exampleBinding()),
+                "the signer is not allowed rds-db:connect, whatever other credential the token names");
+    }
+
     @Test
     void validateAcceptsCallerAllowedRdsDbConnectOnTheBoundDbUser() throws Exception {
         // The example policy from the AWS "IAM database authentication" guide.

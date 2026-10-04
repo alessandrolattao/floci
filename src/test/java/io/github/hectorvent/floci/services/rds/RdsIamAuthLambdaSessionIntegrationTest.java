@@ -68,22 +68,24 @@ class RdsIamAuthLambdaSessionIntegrationTest {
     void tokenSignedWithLambdaSessionCredentialsConnects() throws Exception {
         String instanceId = "iam-lambda-" + Long.toString(System.nanoTime(), 36);
         String accessKeyId = "ASIA" + Long.toString(System.nanoTime(), 36).toUpperCase();
-        int port = rds("CreateDBInstance")
-                .formParam("DBInstanceIdentifier", instanceId)
-                .formParam("DBInstanceClass", "db.t3.micro")
-                .formParam("Engine", "postgres")
-                .formParam("MasterUsername", MASTER_USER)
-                .formParam("MasterUserPassword", MASTER_PASSWORD)
-                .formParam("DBName", DATABASE)
-                .formParam("AllocatedStorage", "20")
-                .formParam("EnableIAMDatabaseAuthentication", "true")
-        .when().post("/").then().statusCode(200)
-                .body(containsString("<IAMDatabaseAuthenticationEnabled>true</IAMDatabaseAuthenticationEnabled>"))
-                .extract().xmlPath()
-                .getInt("CreateDBInstanceResponse.CreateDBInstanceResult.DBInstance.Endpoint.Port");
-        iamService.registerLambdaExecutionRoleSession(ACCOUNT_ID, accessKeyId, SESSION_SECRET, SESSION_TOKEN,
-                "arn:aws:iam::" + ACCOUNT_ID + ":role/connect-with-iam");
         try {
+            // Inside the try, so a create that provisions the database but fails an assertion is
+            // still deleted.
+            int port = rds("CreateDBInstance")
+                    .formParam("DBInstanceIdentifier", instanceId)
+                    .formParam("DBInstanceClass", "db.t3.micro")
+                    .formParam("Engine", "postgres")
+                    .formParam("MasterUsername", MASTER_USER)
+                    .formParam("MasterUserPassword", MASTER_PASSWORD)
+                    .formParam("DBName", DATABASE)
+                    .formParam("AllocatedStorage", "20")
+                    .formParam("EnableIAMDatabaseAuthentication", "true")
+            .when().post("/").then().statusCode(200)
+                    .body(containsString("<IAMDatabaseAuthenticationEnabled>true</IAMDatabaseAuthenticationEnabled>"))
+                    .extract().xmlPath()
+                    .getInt("CreateDBInstanceResponse.CreateDBInstanceResult.DBInstance.Endpoint.Port");
+            iamService.registerLambdaExecutionRoleSession(ACCOUNT_ID, accessKeyId, SESSION_SECRET, SESSION_TOKEN,
+                    "arn:aws:iam::" + ACCOUNT_ID + ":role/connect-with-iam");
             await().atMost(Duration.ofSeconds(60)).ignoreExceptions().until(() -> {
                 try (Connection connection = connect(port, MASTER_PASSWORD)) {
                     return connection.isValid(5);

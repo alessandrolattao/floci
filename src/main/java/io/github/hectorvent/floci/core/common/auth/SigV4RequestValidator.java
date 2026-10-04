@@ -155,6 +155,17 @@ public final class SigV4RequestValidator {
     private record QueryParameter(String name, String value) {}
 
     /**
+     * The value of {@code name} in a token's query string, read as {@link #validate} reads it: the
+     * first parameter whose percent-decoded name matches, its value decoded once. A caller that acts
+     * on a parameter after validating the token reads it here, so it acts on what was verified: a
+     * name spelled with a percent-encoded character, or a parameter given twice, cannot make it read
+     * a different credential than the one the signature was checked with.
+     */
+    public static String queryParameter(String rawQuery, String name) {
+        return findParam(decodeQuery(rawQuery), name);
+    }
+
+    /**
      * Every parameter of the token's query string, its name and value percent-decoded exactly once.
      * A session token is drawn from an alphabet that includes {@code +}, {@code /} and {@code =}, and
      * the presigner writes it percent-encoded once; decoding it again would turn every {@code +}

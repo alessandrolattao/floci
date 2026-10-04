@@ -115,6 +115,59 @@ public final class SigV4TokenTestHelper {
                 "rds-db", timestamp, expiresSeconds, params, Map.of("host", host + ":" + port));
     }
 
+    /**
+     * An RDS token that carries the signer's credential under a percent-encoded parameter name
+     * ({@code X-Amz%2DCredential}) and, after it, a second {@code X-Amz-Credential} naming
+     * {@code otherAccessKeyId}: a token that tries to have one key's signature verified and another
+     * key authorized. Signed as SigV4 signs a query, over every parameter decoded, so its signature
+     * is valid for the signer's key.
+     */
+    public static String createRdsTokenWithASecondCredential(
+            String host,
+            int port,
+            String dbUser,
+            String accessKeyId,
+            String secretKey,
+            String otherAccessKeyId,
+            Instant timestamp,
+            int expiresSeconds
+    ) throws Exception {
+        String date = DateTimeFormatter.ofPattern("yyyyMMdd").withZone(ZoneOffset.UTC).format(timestamp);
+        String dateTime = DATETIME_FMT.format(timestamp);
+        String credentialScope = date + "/us-east-1/rds-db/aws4_request";
+        List<String[]> params = List.of(
+                new String[] {"Action", "connect"},
+                new String[] {"DBUser", dbUser},
+                new String[] {"X-Amz-Algorithm", "AWS4-HMAC-SHA256"},
+                new String[] {"X-Amz-Credential", accessKeyId + "/" + credentialScope},
+                new String[] {"X-Amz-Credential", otherAccessKeyId + "/" + credentialScope},
+                new String[] {"X-Amz-Date", dateTime},
+                new String[] {"X-Amz-Expires", Integer.toString(expiresSeconds)},
+                new String[] {"X-Amz-SignedHeaders", "host"});
+
+        String canonicalQuery = params.stream()
+                .map(param -> uriEncode(param[0]) + "=" + uriEncode(param[1]))
+                .sorted()
+                .reduce((a, b) -> a + "&" + b)
+                .orElseThrow();
+        String canonicalRequest = "GET\n/\n"
+                + canonicalQuery + "\n"
+                + "host:" + host + ":" + port + "\n\n"
+                + "host\n"
+                + "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855";
+        String stringToSign = "AWS4-HMAC-SHA256\n" + dateTime + "\n" + credentialScope + "\n"
+                + sha256Hex(canonicalRequest);
+        String signature = hexEncode(hmacSha256(
+                deriveSigningKey(secretKey, date, "us-east-1", "rds-db"), stringToSign));
+
+        List<String> wire = new ArrayList<>();
+        for (String[] param : params) {
+            String name = param[1].startsWith(accessKeyId + "/") ? "X-Amz%2DCredential" : param[0];
+            wire.add(name + "=" + uriEncode(param[1]));
+        }
+        return host + ":" + port + "/?" + String.join("&", wire) + "&X-Amz-Signature=" + signature;
+    }
+
     public static String createEksToken(
             String clusterName,
             String accessKeyId,
