@@ -18,6 +18,7 @@ import java.nio.file.StandardCopyOption;
 import java.security.GeneralSecurityException;
 import java.security.KeyStore;
 import java.security.cert.CertificateEncodingException;
+import java.security.cert.CertificateException;
 import java.security.cert.X509Certificate;
 import java.util.ArrayList;
 import java.util.Base64;
@@ -173,11 +174,19 @@ public final class ContainerCaBundle {
         }
     }
 
-    /** An SSL context that trusts exactly the certificates in {@code bundle}. */
+    /**
+     * An SSL context that trusts exactly the certificates in {@code bundle}.
+     *
+     * @throws CertificateException when the bundle holds no certificate: a context over it would
+     *                              trust nothing, public endpoints included
+     */
     public static SSLContext sslContext(Path bundle) throws IOException, GeneralSecurityException {
+        List<X509Certificate> certificates = parseCertificates(Files.readString(bundle));
+        if (certificates.isEmpty()) {
+            throw new CertificateException(bundle + " holds no certificate");
+        }
         KeyStore trustStore = KeyStore.getInstance("PKCS12");
         trustStore.load(null, null);
-        List<X509Certificate> certificates = parseCertificates(Files.readString(bundle));
         for (int i = 0; i < certificates.size(); i++) {
             trustStore.setCertificateEntry("anchor-" + i, certificates.get(i));
         }
