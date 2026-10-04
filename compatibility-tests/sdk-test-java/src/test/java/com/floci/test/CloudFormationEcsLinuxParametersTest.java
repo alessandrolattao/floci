@@ -39,21 +39,33 @@ class CloudFormationEcsLinuxParametersTest {
 
     /**
      * Deletes each stack a test asked for and waits until it is gone, so no stack or task
-     * definition outlives the run; a delete that fails or does not finish fails the cleanup.
+     * definition outlives the run. Every stack is tried; a delete that fails or does not finish
+     * fails the cleanup once all of them have been, with each failure attached.
      */
     @AfterAll
     static void cleanup() throws InterruptedException {
         if (cloudFormation == null || ecs == null) {
             return;
         }
+        AssertionError failure = null;
         try {
             for (String stack : STACKS) {
-                cloudFormation.deleteStack(r -> r.stackName(stack));
-                waitForDeleted(stack);
+                try {
+                    cloudFormation.deleteStack(r -> r.stackName(stack));
+                    waitForDeleted(stack);
+                } catch (RuntimeException | AssertionError e) {
+                    if (failure == null) {
+                        failure = new AssertionError("Deleting the LinuxParameters stacks failed");
+                    }
+                    failure.addSuppressed(e);
+                }
             }
         } finally {
             cloudFormation.close();
             ecs.close();
+        }
+        if (failure != null) {
+            throw failure;
         }
     }
 
