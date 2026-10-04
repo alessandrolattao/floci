@@ -135,14 +135,18 @@ class CloudFormationEcsLinuxParametersIntegrationTest {
 
     /**
      * Each run names its stacks and families afresh, so it never meets a stack another run left.
-     * The delete is best effort and asserts nothing: it also clears a stack a refused create left
-     * behind, and it never reports a failure in place of the test's own.
+     * The delete also clears a stack a refused create left behind, and once CloudFormation accepts
+     * it, waits until the stack is gone, so nothing outlives the test; a create that left no stack
+     * makes it a no-op that returns at once, so it never reports a failure in place of the test's.
      */
     private static void deleteStack(String name) {
-        given().contentType("application/x-www-form-urlencoded")
+        int status = given().contentType("application/x-www-form-urlencoded")
                 .formParam("Action", "DeleteStack")
                 .formParam("StackName", name)
-                .when().post("/");
+                .when().post("/").then().extract().statusCode();
+        if (status == 200) {
+            CfnStackWaits.awaitStackDeleted(name);
+        }
     }
 
     private static void createStack(String name, String template) {
