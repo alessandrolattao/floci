@@ -65,7 +65,8 @@ class CloudFormationEcsLinuxParametersIntegrationTest {
                 }
                 """;
         createStack("cfn-linux-parameters", template);
-        assertEquals("CREATE_COMPLETE", CfnStackWaits.awaitTerminal("cfn-linux-parameters").status());
+        try {
+            assertEquals("CREATE_COMPLETE", CfnStackWaits.awaitTerminal("cfn-linux-parameters").status());
 
         given().contentType(ECS_CT)
                 .header("X-Amz-Target", ECS_TARGET + "DescribeTaskDefinition")
@@ -84,6 +85,9 @@ class CloudFormationEcsLinuxParametersIntegrationTest {
                                 "mountOptions", List.of("noexec"))))))
                 .body("taskDefinition.containerDefinitions[1].name", equalTo("plain"))
                 .body("taskDefinition.containerDefinitions[1]", not(hasKey("linuxParameters")));
+        } finally {
+            deleteStack("cfn-linux-parameters");
+        }
     }
 
     @Test
@@ -108,8 +112,14 @@ class CloudFormationEcsLinuxParametersIntegrationTest {
                 }
                 """;
         createStack("cfn-linux-parameters-fargate", template);
-        CfnStackWaits.StackState state = CfnStackWaits.awaitTerminal("cfn-linux-parameters-fargate");
+        try {
+            assertFargateSwapRefused(CfnStackWaits.awaitTerminal("cfn-linux-parameters-fargate"));
+        } finally {
+            deleteStack("cfn-linux-parameters-fargate");
+        }
+    }
 
+    private static void assertFargateSwapRefused(CfnStackWaits.StackState state) {
         assertEquals("ROLLBACK_COMPLETE", state.status());
         List<String> reasons = given().contentType("application/x-www-form-urlencoded")
                 .formParam("Action", "DescribeStackEvents")
@@ -119,6 +129,15 @@ class CloudFormationEcsLinuxParametersIntegrationTest {
         assertTrue(reasons.stream().anyMatch(reason -> reason != null
                         && reason.contains("Fargate compatible task definitions do not support maxSwap")),
                 reasons.toString());
+    }
+
+    /** Each test removes its stack, so the fixed names are free when the tests run again. */
+    private static void deleteStack(String name) {
+        given().contentType("application/x-www-form-urlencoded")
+                .formParam("Action", "DeleteStack")
+                .formParam("StackName", name)
+                .when().post("/").then().statusCode(200);
+        CfnStackWaits.awaitStackDeleted(name);
     }
 
     private static void createStack(String name, String template) {

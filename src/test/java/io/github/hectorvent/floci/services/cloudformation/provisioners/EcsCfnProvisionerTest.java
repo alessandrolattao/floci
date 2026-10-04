@@ -239,6 +239,37 @@ class EcsCfnProvisionerTest {
                 registeredContainer().getUnparsed());
     }
 
+    /**
+     * An Fn::If that picks AWS::NoValue resolves to empty text, which leaves the member out as if
+     * the template had not set it; a value that is not an integer fails the resource.
+     */
+    @Test
+    void anIntegerLinuxParameterLeftOutByNoValueIsOmittedAndATextOneIsRefused() {
+        TaskDefinition td = new TaskDefinition();
+        td.setTaskDefinitionArn(TASK_DEF_ARN);
+        when(ecs.registerTaskDefinition(anyString(), anyList(), any(), any(), any(), any(), any(), anyList(),
+                eq(REGION))).thenReturn(td);
+
+        ObjectNode props = mapper.createObjectNode().put("Family", "web");
+        ObjectNode linux = props.putArray("ContainerDefinitions").addObject().put("Name", "app").put("Image", "nginx:1")
+                .putObject("LinuxParameters").put("SharedMemorySize", "").put("MaxSwap", "").put("Swappiness", "")
+                .put("InitProcessEnabled", true);
+        linux.putArray("Tmpfs").addObject().put("ContainerPath", "/scratch").put("Size", "");
+
+        provisioner.provision(resource("AWS::ECS::TaskDefinition", "TaskDef"), props, ctx());
+
+        assertEquals(Map.of("linuxParameters", Map.of("initProcessEnabled", true,
+                        "tmpfs", List.of(Map.of("containerPath", "/scratch")))),
+                registeredContainer().getUnparsed());
+
+        ObjectNode invalid = mapper.createObjectNode().put("Family", "web");
+        invalid.putArray("ContainerDefinitions").addObject().put("Name", "app").put("Image", "nginx:1")
+                .putObject("LinuxParameters").put("SharedMemorySize", "lots");
+        AwsException refused = assertThrows(AwsException.class,
+                () -> provisioner.provision(resource("AWS::ECS::TaskDefinition", "TaskDef"), invalid, ctx()));
+        assertEquals("Value of property SharedMemorySize must be an integer.", refused.getMessage());
+    }
+
     @Test
     void aContainerWithoutLinuxParametersCarriesNone() {
         TaskDefinition td = new TaskDefinition();
