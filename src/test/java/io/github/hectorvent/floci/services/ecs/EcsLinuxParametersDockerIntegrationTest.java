@@ -136,7 +136,8 @@ class EcsLinuxParametersDockerIntegrationTest {
         try {
             dockerClient.pingCmd().exec();
             return true;
-        } catch (RuntimeException e) {
+        } catch (RuntimeException ignored) {
+            // No reachable Docker daemon: the test is skipped, not failed.
             return false;
         }
     }
