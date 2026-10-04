@@ -131,8 +131,9 @@ init process as PID 1 (`docker run --init`) that forwards signals and reaps orph
 it names no `containerPath`; `sharedMemorySize` sizes `/dev/shm` in MiB (`--shm-size`); each of
 `tmpfs` is mounted at its `containerPath` with its `mountOptions` and `size` in MiB (`--tmpfs`);
 `maxSwap` caps memory plus swap at the container's hard limit plus that many MiB (`--memory-swap`,
-so `0` means no swap), and `swappiness` (`--memory-swappiness`) defaults to 60 with `maxSwap` and is
-ignored without it. A container with no hard limit, neither its own `memory` nor the task's, gets
+so `0` means no swap), and `swappiness` (`--memory-swappiness`) goes with it: as on ECS,
+`RegisterTaskDefinition` refuses a `maxSwap` without a `swappiness`, and a `swappiness` without
+`maxSwap` is ignored. A container with no hard limit, neither its own `memory` nor the task's, gets
 no swap limit, because Docker cannot limit swap without one. A daemon on cgroup v2 discards
 `swappiness`, as Amazon Linux 2023 does. Inside a task behind a security group, `NET_ADMIN` and
 `NET_RAW` stay dropped whatever `capabilities` adds, because the group is enforced in the network

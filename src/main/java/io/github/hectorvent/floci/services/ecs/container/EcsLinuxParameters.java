@@ -14,8 +14,8 @@ import java.util.Map;
  * mknod when no permissions are given), {@code sharedMemorySize} is {@code --shm-size} in MiB,
  * each {@code tmpfs} entry is a {@code --tmpfs} of its size in MiB with its mount options,
  * {@code maxSwap} is {@code --memory-swap} as the container's memory plus that many MiB, and
- * {@code swappiness} is {@code --memory-swappiness}, 60 when only {@code maxSwap} is set and
- * ignored without it.
+ * {@code swappiness} is {@code --memory-swappiness}, which registration requires with
+ * {@code maxSwap}, as ECS does, and which is ignored without it.
  *
  * <p>RegisterTaskDefinition keeps the members verbatim among the definition's unparsed members,
  * which is where they are read from, whether the definition came from the API or a template.
@@ -23,7 +23,6 @@ import java.util.Map;
 final class EcsLinuxParameters {
 
     private static final long MIB = 1024L * 1024L;
-    private static final long DEFAULT_SWAPPINESS = 60;
 
     private EcsLinuxParameters() {
     }
@@ -71,7 +70,9 @@ final class EcsLinuxParameters {
         if (maxSwap != null && memoryLimitMb != null) {
             spec.withMemorySwapBytes((memoryLimitMb + maxSwap) * MIB);
             Long swappiness = number(parameters.get("swappiness"));
-            spec.withMemorySwappiness(swappiness != null ? swappiness : DEFAULT_SWAPPINESS);
+            if (swappiness != null) {
+                spec.withMemorySwappiness(swappiness);
+            }
         }
     }
 
