@@ -21,8 +21,9 @@ import io.github.hectorvent.floci.services.cloudformation.provisioners.CfnDynami
 import io.github.hectorvent.floci.services.cloudformation.provisioners.CfnResourceDispatcher;
 import io.github.hectorvent.floci.services.cloudformation.provisioners.CfnRollback;
 import io.github.hectorvent.floci.services.cloudformation.provisioners.UpdateCleanupResult;
+import io.github.hectorvent.floci.services.iam.AssumeRolePolicyEvaluator;
+import io.github.hectorvent.floci.services.iam.IamPolicyEvaluator;
 import io.github.hectorvent.floci.services.iam.IamService;
-import io.github.hectorvent.floci.services.iam.model.IamRole;
 import io.github.hectorvent.floci.services.s3.S3Service;
 import io.github.hectorvent.floci.services.s3.model.S3Object;
 import io.github.hectorvent.floci.services.ssm.SsmService;
@@ -85,7 +86,11 @@ public class CloudFormationService implements ResourceProvider {
     private final CfnResourceDispatcher dispatcher;
     private final S3Service s3Service;
     private final SsmService ssmService;
+    /** The stack name DescribeStacks accepts, as its validation error states it. */
+    private static final Pattern DESCRIBE_STACKS_NAME = Pattern.compile("[a-zA-Z][-a-zA-Z0-9]*|arn:[-a-zA-Z0-9:/._+]*");
+
     private final IamService iamService;
+    private final AssumeRolePolicyEvaluator trustPolicyEvaluator;
     private final CfnDynamicReferences dynamicReferences;
     private final ObjectMapper objectMapper;
     private final EmulatorConfig config;
@@ -112,6 +117,7 @@ public class CloudFormationService implements ResourceProvider {
         this.s3Service = s3Service;
         this.ssmService = ssmService;
         this.iamService = iamService;
+        this.trustPolicyEvaluator = new AssumeRolePolicyEvaluator(objectMapper, new IamPolicyEvaluator(objectMapper));
         this.dynamicReferences = dynamicReferences;
         this.objectMapper = objectMapper;
         this.config = config;
@@ -1698,10 +1704,26 @@ public class CloudFormationService implements ResourceProvider {
             Map<String, String> newExports = new LinkedHashMap<>();
             Map<String, String> newOutputExportNames = new LinkedHashMap<>();
             JsonNode outputs = template.path("Outputs");
+            Map<String, String> outputValues = new LinkedHashMap<>();
+            try {
+                for (Map.Entry<String, JsonNode> output : outputs.properties()) {
+                    outputValues.put(output.getKey(), finalEngine.resolveOutputValue(output.getValue().path("Value")));
+                }
+            } catch (AwsException e) {
+                if (!CloudFormationTemplateEngine.containsGetStackOutput(outputs)) {
+                    throw e;
+                }
+                // An output whose Fn::GetStackOutput cannot be read fails the operation once the
+                // resources exist, and the stack rolls back as for a resource that failed
+                // (measured: a create deletes them and ends ROLLBACK_COMPLETE).
+                rollbackFailedExecution(stack, region, isCreate, e.getMessage(), previousState,
+                        attemptedResourceIds);
+                return;
+            }
             if (outputs.isObject()) {
                 outputs.fields().forEachRemaining(e -> {
                     JsonNode outputDef = e.getValue();
-                    String value = finalEngine.resolveOutputValue(outputDef.path("Value"));
+                    String value = outputValues.get(e.getKey());
                     newOutputs.put(e.getKey(), value);
 
                     // Register exports
@@ -1847,18 +1869,30 @@ public class CloudFormationService implements ResourceProvider {
             StackResource failedResource,
             StackUpdateSnapshot previousState,
             Set<String> attemptedResourceIds) {
-        String failStatus = isCreate ? "CREATE_FAILED" : "UPDATE_FAILED";
-        stack.setStatus(failStatus);
-        stack.setStatusReason(failedResource.getStatusReason());
-        addEvent(stack, stack.getStackName(), stack.getStackId(),
-                "AWS::CloudFormation::Stack", failStatus, failedResource.getStatusReason());
         LOG.warnv("Stack {0} resource {1} failed: {2}", stack.getStackName(),
                 failedResource.getLogicalId(), failedResource.getStatusReason());
+        rollbackFailedExecution(stack, region, isCreate, failedResource.getStatusReason(), previousState,
+                attemptedResourceIds);
+    }
+
+    /** As above, for a failure that is not one resource's: the reason is the stack's. */
+    private void rollbackFailedExecution(
+            Stack stack,
+            String region,
+            boolean isCreate,
+            String reason,
+            StackUpdateSnapshot previousState,
+            Set<String> attemptedResourceIds) {
+        String failStatus = isCreate ? "CREATE_FAILED" : "UPDATE_FAILED";
+        stack.setStatus(failStatus);
+        stack.setStatusReason(reason);
+        addEvent(stack, stack.getStackName(), stack.getStackId(),
+                "AWS::CloudFormation::Stack", failStatus, reason);
 
         if (isCreate) {
             stack.setStatus("ROLLBACK_IN_PROGRESS");
             addEvent(stack, stack.getStackName(), stack.getStackId(),
-                    "AWS::CloudFormation::Stack", "ROLLBACK_IN_PROGRESS", failedResource.getStatusReason());
+                    "AWS::CloudFormation::Stack", "ROLLBACK_IN_PROGRESS", reason);
             List<String> rollbackFailures = rollbackCreatedResources(stack, region);
             stack.setLastUpdatedTime(now());
             if (rollbackFailures.isEmpty()) {
@@ -1867,18 +1901,18 @@ public class CloudFormationService implements ResourceProvider {
                         "AWS::CloudFormation::Stack", "ROLLBACK_COMPLETE", null);
                 LOG.infov("Stack {0} rolled back to a clean slate (ROLLBACK_COMPLETE)", stack.getStackName());
             } else {
-                String reason = "The following resource(s) failed to roll back: ["
+                String rollbackReason = "The following resource(s) failed to roll back: ["
                         + String.join(", ", rollbackFailures) + "].";
                 stack.setStatus("ROLLBACK_FAILED");
-                stack.setStatusReason(reason);
+                stack.setStatusReason(rollbackReason);
                 addEvent(stack, stack.getStackName(), stack.getStackId(),
-                        "AWS::CloudFormation::Stack", "ROLLBACK_FAILED", reason);
-                LOG.errorv("Stack {0} rollback failed: {1}", stack.getStackName(), reason);
+                        "AWS::CloudFormation::Stack", "ROLLBACK_FAILED", rollbackReason);
+                LOG.errorv("Stack {0} rollback failed: {1}", stack.getStackName(), rollbackReason);
             }
         } else {
             rollbackFailedUpdate(
                     stack, region, previousState, attemptedResourceIds,
-                    failedResource.getStatusReason());
+                    reason);
             return;
         }
         persistStack(stack);
@@ -3036,13 +3070,16 @@ public class CloudFormationService implements ResourceProvider {
         if (roleArn != null) {
             AwsArnUtils.Arn role = AwsArnUtils.parse(roleArn);
             String partition = AwsRegions.partitionFor(region);
+            // CloudFormation assumes the role as the consuming account, so the role has to exist,
+            // be an IAM role of this partition, and trust that account.
+            String caller = "arn:" + partition + ":iam::" + accountId + ":root";
             boolean assumable = "iam".equals(role.service()) && role.resource().startsWith("role/")
                     && partition.equals(role.partition())
                     && iamService.findRole(role.accountId(), role.resource().substring(role.resource().lastIndexOf('/') + 1))
-                            .map(IamRole::getArn)
-                            .filter(AwsArnUtils::isArn)
-                            .map(AwsArnUtils::parse)
-                            .filter(stored -> stored.resource().equals(role.resource()))
+                            .filter(stored -> AwsArnUtils.isArn(stored.getArn())
+                                    && AwsArnUtils.parse(stored.getArn()).resource().equals(role.resource()))
+                            .filter(stored -> trustPolicyEvaluator.allows(stored.getAssumeRolePolicyDocument(),
+                                    caller, caller, accountId, Map.of()))
                             .isPresent();
             if (!assumable) {
                 throw new AwsException("AccessDenied", CloudFormationTemplateEngine.sdkErrorMessage(
@@ -3051,6 +3088,15 @@ public class CloudFormationService implements ResourceProvider {
                         "AWSSecurityTokenService", 403, "AccessDenied"), 403);
             }
             ownerAccount = role.accountId();
+        }
+        // CloudFormation hands the stack name to DescribeStacks as written, a dynamic reference
+        // included (it resolves none inside Fn::GetStackOutput), and DescribeStacks validates it.
+        if (!DESCRIBE_STACKS_NAME.matcher(stackName).matches()) {
+            throw new AwsException("ValidationError", CloudFormationTemplateEngine.sdkErrorMessage(
+                    "1 validation error detected: Value '" + stackName + "' at 'stackName' failed to satisfy"
+                            + " constraint: Member must satisfy regular expression pattern: "
+                            + DESCRIBE_STACKS_NAME.pattern(),
+                    "AmazonCloudFormation", 400, "ValidationError"), 400);
         }
         Stack referenced = resolveStack(stackName, region, ownerAccount);
         if (referenced == null) {
@@ -3075,7 +3121,8 @@ public class CloudFormationService implements ResourceProvider {
     private void validateGetStackOutputPlacement(String templateBody) {
         JsonNode template;
         try {
-            template = parseTemplate(templateBody);
+            // The rules hold for the template as processed: an AWS::Include fragment can carry it.
+            template = awsIncludeProcessor.mergeIncludes(parseTemplate(templateBody));
         } catch (Exception e) {
             LOG.debugv("Skipping Fn::GetStackOutput placement validation; template did not parse: {0}",
                     e.getMessage());

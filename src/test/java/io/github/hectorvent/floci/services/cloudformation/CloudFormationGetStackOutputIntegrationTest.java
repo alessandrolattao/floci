@@ -1,10 +1,15 @@
 package io.github.hectorvent.floci.services.cloudformation;
 
+import io.github.hectorvent.floci.services.s3.S3Service;
 import io.github.hectorvent.floci.testing.RestAssuredJsonUtils;
 import io.quarkus.test.junit.QuarkusTest;
 import io.restassured.response.ValidatableResponse;
+import jakarta.inject.Inject;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.Test;
+
+import java.nio.charset.StandardCharsets;
+import java.util.Map;
 
 import static io.restassured.RestAssured.given;
 import static org.hamcrest.MatcherAssert.assertThat;
@@ -26,6 +31,9 @@ class CloudFormationGetStackOutputIntegrationTest {
     private static final String US_EAST_1 = "us-east-1";
     private static final String EU_WEST_1 = "eu-west-1";
     private static final String SSM_CONTENT_TYPE = "application/x-amz-json-1.1";
+
+    @Inject
+    S3Service s3Service;
 
     @BeforeAll
     static void configureRestAssured() {
@@ -135,6 +143,67 @@ class CloudFormationGetStackOutputIntegrationTest {
                 + " Error Code: AccessDenied; Request ID: "));
     }
 
+    /**
+     * CloudFormation assumes the role to read the output, so the role's trust policy has to let
+     * the consuming account in; a role that only trusts a service is refused like one that does
+     * not exist.
+     */
+    @Test
+    void crossAccount_aRoleThatDoesNotTrustTheAccountIsRefused() {
+        createRole(OTHER_ACCOUNT, "gso-lambda-only", "{\"Service\":\"lambda.amazonaws.com\"}");
+        createProducer(OTHER_ACCOUNT, US_EAST_1, "gso-untrusted-producer", "vpc-untrusted");
+        String roleArn = "arn:aws:iam::" + OTHER_ACCOUNT + ":role/gso-lambda-only";
+
+        createStack(DEFAULT_ACCOUNT, US_EAST_1, "gso-untrusted-consumer", consumer("/gso/untrusted",
+                "{\"Fn::GetStackOutput\": {\"StackName\": \"gso-untrusted-producer\", \"OutputName\": \"VpcId\","
+                        + " \"RoleArn\": \"" + roleArn + "\"}}"));
+
+        CfnStackWaits.StackState state = CfnStackWaits.awaitTerminal("gso-untrusted-consumer");
+        assertEquals("ROLLBACK_COMPLETE", state.status());
+        assertThat(state.reason(), containsString("User: arn:aws:iam::" + DEFAULT_ACCOUNT
+                + ":root is not authorized to perform: sts:AssumeRole on resource: " + roleArn));
+    }
+
+    /**
+     * Measured (eu-west-1, 2026-10-04): an output that cannot be read fails the create after the
+     * resources exist, and the stack rolls back, deleting them.
+     */
+    @Test
+    void anOutputThatCannotBeReadRollsTheStackBack() {
+        createProducer(DEFAULT_ACCOUNT, US_EAST_1, "gso-output-producer", "vpc-output");
+        createStack(DEFAULT_ACCOUNT, US_EAST_1, "gso-output-consumer", """
+                {"Resources": {"Copy": {"Type": "AWS::SSM::Parameter",
+                  "Properties": {"Name": "/gso/output-rollback", "Type": "String", "Value": "created"}}},
+                 "Outputs": {"Missing": {"Value": {"Fn::GetStackOutput": {
+                   "StackName": "gso-output-producer", "OutputName": "Missing"}}}}}
+                """);
+
+        CfnStackWaits.StackState state = CfnStackWaits.awaitTerminal("gso-output-consumer");
+        assertEquals("ROLLBACK_COMPLETE", state.status());
+        assertThat(state.reason(), containsString("TemplateError: Fn::GetStackOutput references output Missing"));
+        parameterValue(DEFAULT_ACCOUNT, US_EAST_1, "/gso/output-rollback")
+                .statusCode(400)
+                .body(containsString("ParameterNotFound"));
+    }
+
+    /**
+     * Measured (eu-west-1, 2026-10-04): CloudFormation does not resolve a dynamic reference inside
+     * Fn::GetStackOutput; the stack name reaches DescribeStacks as written, which refuses it.
+     */
+    @Test
+    void aDynamicReferenceInTheStackNameIsNotResolved() {
+        createStack(DEFAULT_ACCOUNT, US_EAST_1, "gso-dynamic-consumer", consumer("/gso/dynamic",
+                "{\"Fn::GetStackOutput\": {\"StackName\": \"{{resolve:ssm:/gso/producer-name}}\","
+                        + " \"OutputName\": \"VpcId\"}}"));
+
+        CfnStackWaits.StackState state = CfnStackWaits.awaitTerminal("gso-dynamic-consumer");
+        assertEquals("ROLLBACK_COMPLETE", state.status());
+        assertThat(state.reason(), containsString("1 validation error detected: Value '{{resolve:ssm:/gso/producer-name}}'"
+                + " at 'stackName' failed to satisfy constraint: Member must satisfy regular expression pattern:"
+                + " [a-zA-Z][-a-zA-Z0-9]*|arn:[-a-zA-Z0-9:/._+]* (Service: AmazonCloudFormation; Status Code: 400;"
+                + " Error Code: ValidationError; Request ID: "));
+    }
+
     @Test
     void crossPartitionRegion_failsTheDeploy() {
         createStack(DEFAULT_ACCOUNT, US_EAST_1, "gso-partition", consumer("/gso/partition",
@@ -182,6 +251,34 @@ class CloudFormationGetStackOutputIntegrationTest {
                 .statusCode(400)
                 .body(containsString("<Code>ValidationError</Code>"))
                 .body(containsString("Template error: Cannot use Fn::GetStackOutput in Conditions."));
+    }
+
+    /** The placement rules apply to the template as processed, AWS::Include fragments merged. */
+    @Test
+    void inConditionsThroughAnInclude_isRefusedOnCreate() {
+        String bucket = "gso-include-" + System.nanoTime();
+        s3Service.createBucket(bucket, US_EAST_1);
+        s3Service.putObject(bucket, "conditions.json", """
+                {"IsProd": {"Fn::Equals": [
+                  {"Fn::GetStackOutput": {"StackName": "gso-producer", "OutputName": "VpcId"}}, "prod"]}}
+                """.getBytes(StandardCharsets.UTF_8), "application/json", Map.of());
+        String template = """
+                {"Conditions": {"Fn::Transform": {"Name": "AWS::Include",
+                   "Parameters": {"Location": "s3://%s/conditions.json"}}},
+                 "Resources": {"Topic": {"Type": "AWS::SNS::Topic", "Condition": "IsProd"}}}
+                """.formatted(bucket);
+        try {
+            given().contentType("application/x-www-form-urlencoded")
+                    .formParam("Action", "CreateStack")
+                    .formParam("StackName", "gso-include-conditions")
+                    .formParam("TemplateBody", template)
+                    .when().post("/").then()
+                    .statusCode(400)
+                    .body(containsString("Template error: Cannot use Fn::GetStackOutput in Conditions."));
+        } finally {
+            s3Service.deleteObject(bucket, "conditions.json");
+            s3Service.deleteBucket(bucket);
+        }
     }
 
     @Test
@@ -251,13 +348,16 @@ class CloudFormationGetStackOutputIntegrationTest {
     }
 
     private static void createRole(String account, String roleName) {
+        createRole(account, roleName, "{\"AWS\":\"arn:aws:iam::" + DEFAULT_ACCOUNT + ":root\"}");
+    }
+
+    private static void createRole(String account, String roleName, String principal) {
         given().header("Authorization", auth(account, US_EAST_1, "iam"))
                 .contentType("application/x-www-form-urlencoded")
                 .formParam("Action", "CreateRole")
                 .formParam("RoleName", roleName)
                 .formParam("AssumeRolePolicyDocument", "{\"Version\":\"2012-10-17\",\"Statement\":[{\"Effect\":"
-                        + "\"Allow\",\"Principal\":{\"AWS\":\"arn:aws:iam::" + DEFAULT_ACCOUNT + ":root\"},"
-                        + "\"Action\":\"sts:AssumeRole\"}]}")
+                        + "\"Allow\",\"Principal\":" + principal + ",\"Action\":\"sts:AssumeRole\"}]}")
                 .when().post("/").then().statusCode(200);
     }
 
