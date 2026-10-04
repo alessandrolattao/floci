@@ -43,20 +43,22 @@ class CloudFormationEcsLinuxParametersTest {
      * fails the cleanup once all of them have been, with each failure attached.
      */
     @AfterAll
-    static void cleanup() throws InterruptedException {
+    static void cleanup() {
         if (cloudFormation == null || ecs == null) {
             return;
         }
-        AssertionError failure = null;
+        AssertionError failure = new AssertionError("Deleting the LinuxParameters stacks failed");
+        boolean interrupted = false;
         try {
             for (String stack : STACKS) {
                 try {
                     cloudFormation.deleteStack(r -> r.stackName(stack));
                     waitForDeleted(stack);
+                } catch (InterruptedException e) {
+                    // Recorded and restored below, so the remaining stacks are still deleted.
+                    interrupted = true;
+                    failure.addSuppressed(e);
                 } catch (RuntimeException | AssertionError e) {
-                    if (failure == null) {
-                        failure = new AssertionError("Deleting the LinuxParameters stacks failed");
-                    }
                     failure.addSuppressed(e);
                 }
             }
@@ -64,7 +66,10 @@ class CloudFormationEcsLinuxParametersTest {
             cloudFormation.close();
             ecs.close();
         }
-        if (failure != null) {
+        if (interrupted) {
+            Thread.currentThread().interrupt();
+        }
+        if (failure.getSuppressed().length > 0) {
             throw failure;
         }
     }
