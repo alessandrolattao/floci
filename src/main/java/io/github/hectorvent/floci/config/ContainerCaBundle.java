@@ -5,6 +5,7 @@ import org.bouncycastle.cert.jcajce.JcaX509CertificateConverter;
 import org.bouncycastle.openssl.PEMParser;
 import org.jboss.logging.Logger;
 
+import javax.net.ssl.SSLContext;
 import javax.net.ssl.TrustManager;
 import javax.net.ssl.TrustManagerFactory;
 import javax.net.ssl.X509TrustManager;
@@ -151,6 +152,40 @@ public final class ContainerCaBundle {
             }
         }
         return merged;
+    }
+
+    /**
+     * An SSL context that trusts what the bundle carries: the JVM's roots and Floci's own trust
+     * anchor. For Floci's own outbound HTTPS to a URL Floci serves, such as a Cognito pool's issuer,
+     * which on AWS is a public endpoint every client already trusts. Empty when there is no bundle,
+     * or when it cannot be read, and the JVM's roots alone are trusted then.
+     */
+    public static Optional<SSLContext> sslContext(EmulatorConfig config) {
+        Optional<Path> bundle = hostPath(config);
+        if (bundle.isEmpty()) {
+            return Optional.empty();
+        }
+        try {
+            return Optional.of(sslContext(bundle.get()));
+        } catch (IOException | GeneralSecurityException e) {
+            LOG.warnv(e, "Cannot read {0}; Floci's own HTTPS clients trust the JVM's roots only", bundle.get());
+            return Optional.empty();
+        }
+    }
+
+    /** An SSL context that trusts exactly the certificates in {@code bundle}. */
+    public static SSLContext sslContext(Path bundle) throws IOException, GeneralSecurityException {
+        KeyStore trustStore = KeyStore.getInstance("PKCS12");
+        trustStore.load(null, null);
+        List<X509Certificate> certificates = parseCertificates(Files.readString(bundle));
+        for (int i = 0; i < certificates.size(); i++) {
+            trustStore.setCertificateEntry("anchor-" + i, certificates.get(i));
+        }
+        TrustManagerFactory factory = TrustManagerFactory.getInstance(TrustManagerFactory.getDefaultAlgorithm());
+        factory.init(trustStore);
+        SSLContext context = SSLContext.getInstance("TLS");
+        context.init(null, factory.getTrustManagers(), null);
+        return context;
     }
 
     /** Every trust anchor the running JVM accepts by default. */
