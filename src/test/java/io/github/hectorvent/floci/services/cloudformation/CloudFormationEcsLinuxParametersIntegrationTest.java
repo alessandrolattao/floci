@@ -2,9 +2,11 @@ package io.github.hectorvent.floci.services.cloudformation;
 
 import io.github.hectorvent.floci.testing.RestAssuredJsonUtils;
 import io.quarkus.test.junit.QuarkusTest;
+import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.Test;
 
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 
@@ -25,6 +27,26 @@ class CloudFormationEcsLinuxParametersIntegrationTest {
 
     private static final String ECS_CT = "application/x-amz-json-1.1";
     private static final String ECS_TARGET = "AmazonEC2ContainerServiceV20141113.";
+
+    /**
+     * The stacks a test asked for, each named afresh per run so a run never meets another run's.
+     * They are deleted after each test, and a delete CloudFormation does not accept fails there,
+     * reported apart from the test's own failure; deleting a stack that was never created answers
+     * 200 and is a no-op.
+     */
+    private final List<String> stacksToDelete = new ArrayList<>();
+
+    @AfterEach
+    void deleteStacks() {
+        for (String name : stacksToDelete) {
+            given().contentType("application/x-www-form-urlencoded")
+                    .formParam("Action", "DeleteStack")
+                    .formParam("StackName", name)
+                    .when().post("/").then().statusCode(200);
+            CfnStackWaits.awaitStackDeleted(name);
+        }
+        stacksToDelete.clear();
+    }
 
     @BeforeAll
     static void configureRestAssured() {
@@ -65,9 +87,9 @@ class CloudFormationEcsLinuxParametersIntegrationTest {
                   }
                 }
                 """;
-        try {
-            createStack(name, template.formatted(name));
-            assertEquals("CREATE_COMPLETE", CfnStackWaits.awaitTerminal(name).status());
+        stacksToDelete.add(name);
+        createStack(name, template.formatted(name));
+        assertEquals("CREATE_COMPLETE", CfnStackWaits.awaitTerminal(name).status());
 
         given().contentType(ECS_CT)
                 .header("X-Amz-Target", ECS_TARGET + "DescribeTaskDefinition")
@@ -86,9 +108,6 @@ class CloudFormationEcsLinuxParametersIntegrationTest {
                                 "mountOptions", List.of("noexec"))))))
                 .body("taskDefinition.containerDefinitions[1].name", equalTo("plain"))
                 .body("taskDefinition.containerDefinitions[1]", not(hasKey("linuxParameters")));
-        } finally {
-            deleteStack(name);
-        }
     }
 
     @Test
@@ -113,12 +132,9 @@ class CloudFormationEcsLinuxParametersIntegrationTest {
                   }
                 }
                 """;
-        try {
-            createStack(name, template.formatted(name));
-            assertFargateSwapRefused(name, CfnStackWaits.awaitTerminal(name));
-        } finally {
-            deleteStack(name);
-        }
+        stacksToDelete.add(name);
+        createStack(name, template.formatted(name));
+        assertFargateSwapRefused(name, CfnStackWaits.awaitTerminal(name));
     }
 
     private static void assertFargateSwapRefused(String name, CfnStackWaits.StackState state) {
@@ -131,22 +147,6 @@ class CloudFormationEcsLinuxParametersIntegrationTest {
         assertTrue(reasons.stream().anyMatch(reason -> reason != null
                         && reason.contains("Fargate compatible task definitions do not support maxSwap")),
                 reasons.toString());
-    }
-
-    /**
-     * Each run names its stacks and families afresh, so it never meets a stack another run left.
-     * The delete also clears a stack a refused create left behind, and once CloudFormation accepts
-     * it, waits until the stack is gone, so nothing outlives the test; a create that left no stack
-     * makes it a no-op that returns at once, so it never reports a failure in place of the test's.
-     */
-    private static void deleteStack(String name) {
-        int status = given().contentType("application/x-www-form-urlencoded")
-                .formParam("Action", "DeleteStack")
-                .formParam("StackName", name)
-                .when().post("/").then().extract().statusCode();
-        if (status == 200) {
-            CfnStackWaits.awaitStackDeleted(name);
-        }
     }
 
     private static void createStack(String name, String template) {
