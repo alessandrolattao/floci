@@ -233,7 +233,6 @@ public class EventBridgeHandler {
                 );
                 target.setRoleArn(t.path("RoleArn").asText(null));
                 target.setInputTransformer(InputTransformer.fromJson(t.path("InputTransformer")));
-                target.setRoleArn(t.path("RoleArn").asText(null));
                 JsonNode sqsParamsNode = t.path("SqsParameters");
                 if (!sqsParamsNode.isMissingNode() && sqsParamsNode.isObject()) {
                     String messageGroupId = sqsParamsNode.path("MessageGroupId").asText(null);
@@ -304,9 +303,6 @@ public class EventBridgeHandler {
             ObjectNode node = objectMapper.createObjectNode();
             node.put("Id", t.getId());
             node.put("Arn", t.getArn());
-            if (t.getRoleArn() != null) {
-                node.put("RoleArn", t.getRoleArn());
-            }
             if (t.getInput() != null) {
                 node.put("Input", t.getInput());
             }
