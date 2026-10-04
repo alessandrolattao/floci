@@ -7,6 +7,7 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ArrayNode;
 import com.fasterxml.jackson.databind.node.JsonNodeFactory;
 import com.fasterxml.jackson.databind.node.ObjectNode;
+import com.fasterxml.jackson.databind.node.TextNode;
 import io.github.hectorvent.floci.core.common.AwsException;
 import io.github.hectorvent.floci.services.cloudformation.model.StackResource;
 import io.github.hectorvent.floci.services.eventbridge.EventBridgeService;
@@ -49,6 +50,8 @@ public class EventsCfnProvisioner implements CfnResourceProvisioner {
 
     private static final Logger LOG = Logger.getLogger(EventsCfnProvisioner.class);
     private static final ObjectMapper MAPPER = new ObjectMapper();
+    /** What an AWS::NoValue is marked with until the target is read: no literal in a template is it. */
+    private static final String NO_VALUE = "\u0000AWS::NoValue";
 
     private static final String EVENT_BUS_CREATED_TIME_ATTR = "FlociEventBusCreatedTime";
     private static final String EVENT_BUS_MANAGED_TAG_KEYS_ATTR = "FlociEventBusManagedTagKeys";
@@ -154,7 +157,7 @@ public class EventsCfnProvisioner implements CfnResourceProvisioner {
         List<Target> targets = new ArrayList<>();
         if (props != null && props.has("Targets") && props.get("Targets").isArray()) {
             for (JsonNode targetNode : props.get("Targets")) {
-                JsonNode resolved = withoutNoValue(ctx.engine().resolveNode(targetNode));
+                JsonNode resolved = withoutNoValue(ctx.engine().resolveNode(markNoValue(targetNode)));
                 String targetId = resolved.path("Id").asText(null);
                 String targetArn = resolved.path("Arn").asText(null);
                 String input = resolved.path("Input").asText(null);
@@ -748,9 +751,44 @@ public class EventsCfnProvisioner implements CfnResourceProvisioner {
     }
 
     /**
-     * A resolved target without what an Fn::If dropped. The engine resolves AWS::NoValue to empty
-     * text, and a member or a list item that resolved to it is absent, as CloudFormation leaves it
-     * out of the PutTargets call, at any depth.
+     * The target with each AWS::NoValue that stands for a member, a list item or an Fn::If branch
+     * marked before the engine resolves it, since the engine resolves AWS::NoValue to empty text,
+     * which a literal "" also is. The arguments of other functions are left to the engine.
+     */
+    private static JsonNode markNoValue(JsonNode node) {
+        if (node instanceof ObjectNode object && object.size() == 1
+                && "AWS::NoValue".equals(object.path("Ref").asText(null))) {
+            return TextNode.valueOf(NO_VALUE);
+        }
+        if (node instanceof ObjectNode object) {
+            if (object.size() == 1) {
+                String function = object.fieldNames().next();
+                if ("Fn::If".equals(function) && object.get(function) instanceof ArrayNode args && args.size() == 3) {
+                    ArrayNode branches = MAPPER.createArrayNode()
+                            .add(args.get(0)).add(markNoValue(args.get(1))).add(markNoValue(args.get(2)));
+                    ObjectNode marked = MAPPER.createObjectNode();
+                    marked.set(function, branches);
+                    return marked;
+                }
+                if ("Ref".equals(function) || function.startsWith("Fn::")) {
+                    return node;
+                }
+            }
+            ObjectNode marked = MAPPER.createObjectNode();
+            object.properties().forEach(member -> marked.set(member.getKey(), markNoValue(member.getValue())));
+            return marked;
+        }
+        if (node instanceof ArrayNode array) {
+            ArrayNode marked = MAPPER.createArrayNode();
+            array.forEach(item -> marked.add(markNoValue(item)));
+            return marked;
+        }
+        return node;
+    }
+
+    /**
+     * A resolved target without the members and list items marked as AWS::NoValue, at any depth,
+     * as CloudFormation leaves them out of the PutTargets call.
      */
     private static JsonNode withoutNoValue(JsonNode node) {
         if (node instanceof ObjectNode object) {
@@ -775,7 +813,7 @@ public class EventsCfnProvisioner implements CfnResourceProvisioner {
     }
 
     private static boolean isNoValue(JsonNode node) {
-        return node.isTextual() && node.asText().isEmpty();
+        return node.isTextual() && NO_VALUE.equals(node.asText());
     }
 
     /**
