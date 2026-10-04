@@ -70,6 +70,7 @@ class OidcAuthValidatorTest {
         EmulatorConfig.SecurityConfig securityConfig = mock(EmulatorConfig.SecurityConfig.class);
         when(config.security()).thenReturn(securityConfig);
         when(securityConfig.allowPrivateJwtTargets()).thenReturn(true);
+        when(config.tls()).thenReturn(mock(EmulatorConfig.TlsConfig.class));
         signatureVerifier = new JwtSignatureVerifier(mapper, config);
         validator = new OidcAuthValidator(new JwtClaimsDecoder(mapper), signatureVerifier,
                 Clock.fixed(NOW, ZoneOffset.UTC));
