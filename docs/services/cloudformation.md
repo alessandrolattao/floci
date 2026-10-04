@@ -266,9 +266,11 @@ accepts, not only by name:
 
 An `UpdateStack` that submits the template the stack already has, with the same parameter values,
 is refused with `ValidationError` `No updates are to be performed.` and changes nothing, as on AWS.
-The template is compared as a document, so indentation and key order do not count; parameters are
-compared by their resolved values, so an `AWS::SSM::Parameter::Value` parameter whose stored value
-moved is a change. A `CreateChangeSet` for such an update is created `FAILED`, `UNAVAILABLE`, with
+The template is compared as a document, so indentation and key order do not count, and as
+CloudFormation processes it: `AWS::Include` fragments are read again and merged and the SAM
+transform is applied, so an unchanged SAM template is not an update and a fragment changed in S3 is.
+Parameters are compared by their resolved values, so an `AWS::SSM::Parameter::Value` parameter
+whose stored value moved is a change. A `CreateChangeSet` for such an update is created `FAILED`, `UNAVAILABLE`, with
 `The submitted information didn't contain changes. Submit different information to create a change
 set.`, which is what the AWS CLI's `deploy` and the CDK read as "no changes". A change to the
 `Outputs` or the `Description` alone is an update, and a template with a nested stack is always

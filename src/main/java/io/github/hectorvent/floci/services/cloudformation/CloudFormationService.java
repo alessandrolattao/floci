@@ -488,12 +488,17 @@ public class CloudFormationService implements ResourceProvider {
         }
         JsonNode template;
         try {
-            template = parseTemplate(templateBody);
+            // Compared as execution stores it: AWS::Include fragments read again and merged, then
+            // the SAM transform applied. A fragment that changed in S3 is a change.
+            template = awsIncludeProcessor.mergeIncludes(parseTemplate(templateBody));
+            if (samTransformProcessor.hasSamTransform(template)) {
+                template = samTransformProcessor.expandSamTemplate(template);
+            }
             if (!parseTemplate(stack.getTemplateBody()).equals(template)) {
                 return false;
             }
         } catch (Exception e) {
-            LOG.debugv("Treating an update as a change; a template did not parse: {0}", e.getMessage());
+            LOG.debugv("Treating an update as a change; a template did not process: {0}", e.getMessage());
             return false;
         }
         // A nested stack is always updated, whether or not its template changed: AWS reads the
@@ -505,7 +510,9 @@ public class CloudFormationService implements ResourceProvider {
         }
         // The values compared are the resolved ones, as the change set's own diff does: an
         // AWS::SSM::Parameter::Value parameter whose stored value moved is a change even though
-        // the name it is given is the same.
+        // the name it is given is the same. A stack persisted before resolved values were kept
+        // knows only the names it was given, so whether a stored value moved cannot be told: such
+        // a stack is updated, which converges it and records the values for the next time.
         Map<String, String> deployed = stack.resolvedParametersSnapshot().isEmpty()
                 ? stack.parametersSnapshot() : stack.resolvedParametersSnapshot();
         Map<String, String> submitted = resolveDefaultParameters(template, parameters == null ? Map.of() : parameters);

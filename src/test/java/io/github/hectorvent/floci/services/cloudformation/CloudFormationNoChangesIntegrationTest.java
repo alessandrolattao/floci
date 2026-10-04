@@ -1,10 +1,15 @@
 package io.github.hectorvent.floci.services.cloudformation;
 
+import io.github.hectorvent.floci.services.s3.S3Service;
 import io.github.hectorvent.floci.testing.RestAssuredJsonUtils;
 import io.quarkus.test.junit.QuarkusTest;
 import io.restassured.response.ValidatableResponse;
+import jakarta.inject.Inject;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.Test;
+
+import java.nio.charset.StandardCharsets;
+import java.util.Map;
 
 import static io.restassured.RestAssured.given;
 import static org.hamcrest.Matchers.containsString;
@@ -24,6 +29,9 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
  */
 @QuarkusTest
 class CloudFormationNoChangesIntegrationTest {
+
+    @Inject
+    S3Service s3Service;
 
     private static final String TEMPLATE = """
             {"Resources": {"Topic": {"Type": "AWS::SNS::Topic", "Properties": {"TopicName": "%s"}}},
@@ -62,6 +70,71 @@ class CloudFormationNoChangesIntegrationTest {
         update("outputs-only", template.replace("\"Value\": \"1\"", "\"Value\": \"2\"")).statusCode(200);
 
         assertEquals("UPDATE_COMPLETE", CfnStackWaits.awaitTerminal("outputs-only").status());
+        given().contentType("application/x-www-form-urlencoded")
+                .formParam("Action", "DescribeStacks")
+                .formParam("StackName", "outputs-only")
+                .when().post("/").then().statusCode(200)
+                .body(containsString("<OutputKey>Out</OutputKey>"))
+                .body(containsString("<OutputValue>2</OutputValue>"));
+    }
+
+    /**
+     * A transformed template is compared as CloudFormation processes it: the SAM transform applied,
+     * so resubmitting an unchanged SAM template is not an update either.
+     */
+    @Test
+    void anUnchangedSamTemplateIsRefused() {
+        String template = """
+                {"Transform": "AWS::Serverless-2016-10-31",
+                 "Resources": {"Table": {"Type": "AWS::Serverless::SimpleTable",
+                                         "Properties": {"TableName": "no-change-sam-table"}}}}""";
+        create("no-change-sam", template);
+
+        update("no-change-sam", template)
+                .statusCode(400)
+                .body(containsString("No updates are to be performed."));
+        assertEquals("CREATE_COMPLETE", CfnStackWaits.awaitTerminal("no-change-sam").status());
+    }
+
+    /**
+     * AWS::Include fragments are merged before the comparison, and read again: the same template
+     * with the same fragment is not an update, and with the fragment changed in S3 it is.
+     */
+    @Test
+    void anIncludeIsComparedWithItsFragmentReadAgain() {
+        String bucket = "no-change-include-" + System.nanoTime();
+        s3Service.createBucket(bucket, "us-east-1");
+        putFragment(bucket, "Description: first\n");
+        String template = """
+                Resources:
+                  Topic:
+                    Type: AWS::SNS::Topic
+                    Metadata:
+                      Fn::Transform:
+                        Name: AWS::Include
+                        Parameters:
+                          Location: s3://%s/fragment.yaml
+                    Properties:
+                      TopicName: no-change-include-topic
+                """.formatted(bucket);
+        try {
+            create("no-change-include", template);
+
+            update("no-change-include", template)
+                    .statusCode(400)
+                    .body(containsString("No updates are to be performed."));
+
+            putFragment(bucket, "Description: second\n");
+            update("no-change-include", template).statusCode(200);
+            assertEquals("UPDATE_COMPLETE", CfnStackWaits.awaitTerminal("no-change-include").status());
+        } finally {
+            s3Service.deleteObject(bucket, "fragment.yaml");
+            s3Service.deleteBucket(bucket);
+        }
+    }
+
+    private void putFragment(String bucket, String content) {
+        s3Service.putObject(bucket, "fragment.yaml", content.getBytes(StandardCharsets.UTF_8), "text/yaml", Map.of());
     }
 
     @Test
