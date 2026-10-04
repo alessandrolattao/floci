@@ -335,16 +335,16 @@ public class EcsCfnProvisioner implements CfnResourceProvisioner {
         if (node.hasNonNull("InitProcessEnabled")) {
             result.put("initProcessEnabled", node.path("InitProcessEnabled").asBoolean());
         }
-        putInt(result, "maxSwap", node.path("MaxSwap"));
-        putInt(result, "sharedMemorySize", node.path("SharedMemorySize"));
-        putInt(result, "swappiness", node.path("Swappiness"));
+        putInt(result, "maxSwap", "MaxSwap", node.path("MaxSwap"));
+        putInt(result, "sharedMemorySize", "SharedMemorySize", node.path("SharedMemorySize"));
+        putInt(result, "swappiness", "Swappiness", node.path("Swappiness"));
         if (node.path("Tmpfs").isArray()) {
             List<Map<String, Object>> mounts = new ArrayList<>();
             for (JsonNode item : node.path("Tmpfs")) {
                 Map<String, Object> mount = new LinkedHashMap<>();
                 putText(mount, "containerPath", item.path("ContainerPath"));
                 putStringList(mount, "mountOptions", item.path("MountOptions"));
-                putInt(mount, "size", item.path("Size"));
+                putInt(mount, "size", "Size", item.path("Size"));
                 mounts.add(mount);
             }
             result.put("tmpfs", mounts);
@@ -358,9 +358,27 @@ public class EcsCfnProvisioner implements CfnResourceProvisioner {
         }
     }
 
-    private static void putInt(Map<String, Object> target, String key, JsonNode value) {
-        if (value != null && !value.isMissingNode() && !value.isNull()) {
+    /**
+     * An integer member, written only when the template sets one. An Fn::If that picks
+     * AWS::NoValue resolves to empty text and leaves it out; anything else has to be an integer,
+     * as for DesiredCount.
+     */
+    private static void putInt(Map<String, Object> target, String key, String property, JsonNode value) {
+        if (value == null || value.isMissingNode() || value.isNull()) {
+            return;
+        }
+        if (value.isIntegralNumber()) {
             target.put(key, value.asInt());
+            return;
+        }
+        String text = value.asText().trim();
+        if (text.isEmpty()) {
+            return;
+        }
+        try {
+            target.put(key, Integer.parseInt(text));
+        } catch (NumberFormatException e) {
+            throw new AwsException("ValidationError", "Value of property " + property + " must be an integer.", 400);
         }
     }
 
