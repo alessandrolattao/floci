@@ -154,7 +154,7 @@ public class EventsCfnProvisioner implements CfnResourceProvisioner {
         List<Target> targets = new ArrayList<>();
         if (props != null && props.has("Targets") && props.get("Targets").isArray()) {
             for (JsonNode targetNode : props.get("Targets")) {
-                JsonNode resolved = ctx.engine().resolveNode(targetNode);
+                JsonNode resolved = withoutNoValue(ctx.engine().resolveNode(targetNode));
                 String targetId = resolved.path("Id").asText(null);
                 String targetArn = resolved.path("Arn").asText(null);
                 String input = resolved.path("Input").asText(null);
@@ -745,6 +745,37 @@ public class EventsCfnProvisioner implements CfnResourceProvisioner {
         CfnDeletes.safeDelete("Event bus policy statement", physicalId,
                 () -> eventBridgeService.removePermission(busName, statementId, false, region),
                 "ResourceNotFoundException");
+    }
+
+    /**
+     * A resolved target without what an Fn::If dropped. The engine resolves AWS::NoValue to empty
+     * text, and a member or a list item that resolved to it is absent, as CloudFormation leaves it
+     * out of the PutTargets call, at any depth.
+     */
+    private static JsonNode withoutNoValue(JsonNode node) {
+        if (node instanceof ObjectNode object) {
+            ObjectNode kept = MAPPER.createObjectNode();
+            object.properties().forEach(member -> {
+                if (!isNoValue(member.getValue())) {
+                    kept.set(member.getKey(), withoutNoValue(member.getValue()));
+                }
+            });
+            return kept;
+        }
+        if (node instanceof ArrayNode array) {
+            ArrayNode kept = MAPPER.createArrayNode();
+            array.forEach(item -> {
+                if (!isNoValue(item)) {
+                    kept.add(withoutNoValue(item));
+                }
+            });
+            return kept;
+        }
+        return node;
+    }
+
+    private static boolean isNoValue(JsonNode node) {
+        return node.isTextual() && node.asText().isEmpty();
     }
 
     /**

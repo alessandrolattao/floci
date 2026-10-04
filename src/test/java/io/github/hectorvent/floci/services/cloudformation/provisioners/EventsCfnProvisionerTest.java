@@ -215,6 +215,32 @@ class EventsCfnProvisionerTest {
         assertEquals(new Target.RetryPolicy(0, 60), onlyPutTarget().getRetryPolicy());
     }
 
+    /**
+     * An Fn::If that picks AWS::NoValue resolves to empty text; the member it stood for is left
+     * out, as CloudFormation leaves it out of PutTargets, at any depth, and a list item too.
+     */
+    @Test
+    void membersResolvedToNoValueAreLeftOut() throws Exception {
+        stubPutRule();
+        ObjectNode props = mapper.createObjectNode().put("Name", "orders");
+        props.putArray("Targets").add(mapper.readTree("""
+                {"Id": "Q", "Arn": "arn:aws:sqs:us-east-1:000000000000:q", "RoleArn": "",
+                 "RetryPolicy": {"MaximumRetryAttempts": "", "MaximumEventAgeInSeconds": "60"},
+                 "EcsParameters": {"TaskDefinitionArn": "arn:aws:ecs:us-east-1:000000000000:task-definition/jobs:1",
+                                   "TaskCount": "", "TagList": ["", {"Key": "team", "Value": "jobs"}]},
+                 "DeadLetterConfig": ""}
+                """));
+
+        provisioner.provision(resource("AWS::Events::Rule", "Rule"), props, ctx(null));
+
+        Target put = onlyPutTarget();
+        assertNull(put.getRoleArn());
+        assertNull(put.getDeadLetterConfig());
+        assertEquals(new Target.RetryPolicy(null, 60), put.getRetryPolicy());
+        assertNull(put.getEcsParameters().getTaskCount());
+        assertEquals(mapper.readTree("[{\"Key\": \"team\", \"Value\": \"jobs\"}]"), put.getEcsParameters().getTags());
+    }
+
     @Test
     void aTargetWithoutThemLeavesThemUnset() {
         // Unset means EventBridge's defaults (185 attempts, 24 hours, no dead-letter queue).
