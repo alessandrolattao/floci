@@ -154,6 +154,37 @@ class ContainerLifecycleManagerLinuxOptionsTest {
                 hostConfig.getCapDrop());
     }
 
+    /**
+     * ALL among the adds stays an add: Docker grants every capability but the ones dropped when
+     * ALL is added (measured: docker run --cap-add ALL --cap-drop NET_ADMIN --cap-drop NET_RAW
+     * reports CapEff 000001ffffffcfff, bits 12 and 13 clear), so the firewall's drops still hold.
+     */
+    @Test
+    void aSecurityGroupWorkloadAskingForAllStillHasItsFirewallCapabilitiesDropped() {
+        CreateContainerCmd createCmd = stubCreateContainer();
+
+        manager().create(builder()
+                .withLabels(Map.of(ContainerStorageHelper.SECURITY_GROUP_WORKLOAD_LABEL, "true"))
+                .withCapAdd("ALL")
+                .build());
+
+        HostConfig hostConfig = capturedHostConfig(createCmd);
+        assertArrayEquals(new Capability[] {Capability.ALL}, hostConfig.getCapAdd());
+        assertArrayEquals(new Capability[] {Capability.NET_ADMIN, Capability.NET_RAW}, hostConfig.getCapDrop());
+    }
+
+    /** KILL is one of the capabilities ECS accepts, and docker-java has it. */
+    @Test
+    void killIsAddedAndDroppedLikeAnyOtherCapability() {
+        CreateContainerCmd createCmd = stubCreateContainer();
+
+        manager().create(builder().withCapAdd("KILL").withCapDrop("CAP_KILL").build());
+
+        HostConfig hostConfig = capturedHostConfig(createCmd);
+        assertArrayEquals(new Capability[] {Capability.KILL}, hostConfig.getCapAdd());
+        assertArrayEquals(new Capability[] {Capability.KILL}, hostConfig.getCapDrop());
+    }
+
     @Test
     void aSecurityGroupWorkloadThatAskedForNothingKeepsItsDrops() {
         CreateContainerCmd createCmd = stubCreateContainer();
