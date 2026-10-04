@@ -33,6 +33,7 @@ class CloudFormationEcsLinuxParametersIntegrationTest {
 
     @Test
     void linuxParametersReachTheTaskDefinition() {
+        String name = "cfn-linux-parameters-" + System.nanoTime();
         String template = """
                 {
                   "Parameters": {"Shm": {"Type": "Number", "Default": "256"}},
@@ -40,7 +41,7 @@ class CloudFormationEcsLinuxParametersIntegrationTest {
                     "TaskDef": {
                       "Type": "AWS::ECS::TaskDefinition",
                       "Properties": {
-                        "Family": "cfn-linux-parameters",
+                        "Family": "%s",
                         "RequiresCompatibilities": ["EC2"],
                         "NetworkMode": "bridge",
                         "ContainerDefinitions": [
@@ -65,12 +66,12 @@ class CloudFormationEcsLinuxParametersIntegrationTest {
                 }
                 """;
         try {
-            createStack("cfn-linux-parameters", template);
-            assertEquals("CREATE_COMPLETE", CfnStackWaits.awaitTerminal("cfn-linux-parameters").status());
+            createStack(name, template.formatted(name));
+            assertEquals("CREATE_COMPLETE", CfnStackWaits.awaitTerminal(name).status());
 
         given().contentType(ECS_CT)
                 .header("X-Amz-Target", ECS_TARGET + "DescribeTaskDefinition")
-                .body("{\"taskDefinition\":\"cfn-linux-parameters\"}")
+                .body("{\"taskDefinition\":\"" + name + "\"}")
                 .when().post("/").then().statusCode(200)
                 .body("taskDefinition.containerDefinitions[0].name", equalTo("worker"))
                 .body("taskDefinition.containerDefinitions[0].linuxParameters", equalTo(Map.of(
@@ -86,19 +87,20 @@ class CloudFormationEcsLinuxParametersIntegrationTest {
                 .body("taskDefinition.containerDefinitions[1].name", equalTo("plain"))
                 .body("taskDefinition.containerDefinitions[1]", not(hasKey("linuxParameters")));
         } finally {
-            deleteStack("cfn-linux-parameters");
+            deleteStack(name);
         }
     }
 
     @Test
     void aFargateTemplateAskingForSwapFailsAsRegisterTaskDefinitionDoes() {
+        String name = "cfn-linux-parameters-fargate-" + System.nanoTime();
         String template = """
                 {
                   "Resources": {
                     "TaskDef": {
                       "Type": "AWS::ECS::TaskDefinition",
                       "Properties": {
-                        "Family": "cfn-linux-parameters-fargate",
+                        "Family": "%s",
                         "RequiresCompatibilities": ["FARGATE"],
                         "NetworkMode": "awsvpc",
                         "Cpu": "256",
@@ -112,18 +114,18 @@ class CloudFormationEcsLinuxParametersIntegrationTest {
                 }
                 """;
         try {
-            createStack("cfn-linux-parameters-fargate", template);
-            assertFargateSwapRefused(CfnStackWaits.awaitTerminal("cfn-linux-parameters-fargate"));
+            createStack(name, template.formatted(name));
+            assertFargateSwapRefused(name, CfnStackWaits.awaitTerminal(name));
         } finally {
-            deleteStack("cfn-linux-parameters-fargate");
+            deleteStack(name);
         }
     }
 
-    private static void assertFargateSwapRefused(CfnStackWaits.StackState state) {
+    private static void assertFargateSwapRefused(String name, CfnStackWaits.StackState state) {
         assertEquals("ROLLBACK_COMPLETE", state.status());
         List<String> reasons = given().contentType("application/x-www-form-urlencoded")
                 .formParam("Action", "DescribeStackEvents")
-                .formParam("StackName", "cfn-linux-parameters-fargate")
+                .formParam("StackName", name)
                 .when().post("/").then().statusCode(200).extract().xmlPath()
                 .getList("**.findAll { it.name() == 'ResourceStatusReason' }", String.class);
         assertTrue(reasons.stream().anyMatch(reason -> reason != null
@@ -132,8 +134,8 @@ class CloudFormationEcsLinuxParametersIntegrationTest {
     }
 
     /**
-     * Each test removes its stack, in a finally that also covers a create that failed, so the
-     * fixed names are free when the tests run again.
+     * Each run names its stacks and families afresh, so it never meets a stack another run left,
+     * and removes them in a finally that also covers a create that failed.
      */
     private static void deleteStack(String name) {
         given().contentType("application/x-www-form-urlencoded")
