@@ -332,9 +332,7 @@ public class EcsCfnProvisioner implements CfnResourceProvisioner {
             }
             result.put("devices", devices);
         }
-        if (node.hasNonNull("InitProcessEnabled")) {
-            result.put("initProcessEnabled", node.path("InitProcessEnabled").asBoolean());
-        }
+        putBoolean(result, "initProcessEnabled", "InitProcessEnabled", node.path("InitProcessEnabled"));
         putInt(result, "maxSwap", "MaxSwap", node.path("MaxSwap"));
         putInt(result, "sharedMemorySize", "SharedMemorySize", node.path("SharedMemorySize"));
         putInt(result, "swappiness", "Swappiness", node.path("Swappiness"));
@@ -356,6 +354,28 @@ public class EcsCfnProvisioner implements CfnResourceProvisioner {
         if (value != null && !value.isMissingNode() && !value.isNull()) {
             target.put(key, value.asText());
         }
+    }
+
+    /**
+     * A boolean member, written only when the template sets one: empty text, what AWS::NoValue
+     * resolves to, leaves it out, and text other than true or false fails the resource.
+     */
+    private static void putBoolean(Map<String, Object> target, String key, String property, JsonNode value) {
+        if (value == null || value.isMissingNode() || value.isNull()) {
+            return;
+        }
+        if (value.isBoolean()) {
+            target.put(key, value.asBoolean());
+            return;
+        }
+        String text = value.asText().trim();
+        if (text.isEmpty()) {
+            return;
+        }
+        if (!"true".equalsIgnoreCase(text) && !"false".equalsIgnoreCase(text)) {
+            throw new AwsException("ValidationError", "Value of property " + property + " must be a boolean.", 400);
+        }
+        target.put(key, Boolean.parseBoolean(text));
     }
 
     /**
