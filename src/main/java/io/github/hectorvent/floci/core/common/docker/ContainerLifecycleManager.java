@@ -1125,7 +1125,8 @@ public class ContainerLifecycleManager {
                 spec.labels(), ContainerStorageHelper.SECURITY_GROUP_WORKLOAD_LABEL))) {
             // The security group is enforced inside the namespace the workload shares, so the
             // workload must not be able to rewrite it, whatever capabilities it asks for. Docker
-            // applies a named add over a drop, so the two are taken out of the adds as well.
+            // applies a named add over a drop, so the two are taken out of the adds as well; ALL
+            // among the adds is every capability but the dropped ones, so it can stay.
             capDrop.add(Capability.NET_ADMIN);
             capDrop.add(Capability.NET_RAW);
             capAdd.removeAll(capDrop);
