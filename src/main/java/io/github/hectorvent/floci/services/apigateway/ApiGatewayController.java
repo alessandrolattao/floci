@@ -6,6 +6,7 @@ import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Objects;
 import java.util.Set;
 
 import com.fasterxml.jackson.core.io.JsonStringEncoder;
@@ -1600,6 +1601,22 @@ public class ApiGatewayController {
         return Response.ok(toV2DomainNode(region, domain).toString()).type(MediaType.APPLICATION_JSON).build();
     }
 
+    /**
+     * {@code UpdateDomainName}: the body's configuration replaces the domain's as a whole, and a body
+     * without one changes nothing.
+     */
+    @PATCH
+    @Path("/v2/domainnames/{domainName}")
+    public Response updateV2DomainName(@Context HttpHeaders headers, @PathParam("domainName") String domainName,
+                                       String body) {
+        String region = regionResolver.resolveRegion(headers);
+        Map<String, Object> request = readJsonBody(body);
+        CustomDomain domain = request.get("domainNameConfigurations") == null
+                ? service.getDomainName(region, domainName)
+                : service.replaceV2DomainConfiguration(region, domainName, request);
+        return Response.ok(toV2DomainNode(region, domain).toString()).type(MediaType.APPLICATION_JSON).build();
+    }
+
     @DELETE
     @Path("/v2/domainnames/{domainName}")
     public Response deleteV2DomainName(@Context HttpHeaders headers, @PathParam("domainName") String domainName) {
@@ -1649,6 +1666,29 @@ public class ApiGatewayController {
         StoredMapping found = service.getApiMapping(region, domainName, apiMappingId);
         return Response.ok(toApiMappingNode(found).toString())
                 .type(MediaType.APPLICATION_JSON).build();
+    }
+
+    /**
+     * {@code UpdateApiMapping}: what the body leaves out keeps its value, as on AWS, and the mapping
+     * keeps its id through a change of key.
+     */
+    @PATCH
+    @Path("/v2/domainnames/{domainName}/apimappings/{apiMappingId}")
+    public Response updateApiMapping(@Context HttpHeaders headers,
+                                     @PathParam("domainName") String domainName,
+                                     @PathParam("apiMappingId") String apiMappingId,
+                                     String body) {
+        String region = regionResolver.resolveRegion(headers);
+        Map<String, Object> request = readJsonBody(body);
+        StoredMapping current = service.getApiMapping(region, domainName, apiMappingId);
+        String currentKey = ApiGatewayService.canonicalBasePath(current.storedPath());
+        String apiMappingKey = request.containsKey("apiMappingKey")
+                ? Objects.toString(request.get("apiMappingKey"), null)
+                : ("(none)".equals(currentKey) ? null : currentKey);
+        String apiId = Objects.toString(request.get("apiId"), current.mapping().getRestApiId());
+        String stage = Objects.toString(request.get("stage"), current.mapping().getStage());
+        StoredMapping updated = service.updateApiMapping(region, domainName, apiMappingId, apiMappingKey, apiId, stage);
+        return Response.ok(toApiMappingNode(updated).toString()).type(MediaType.APPLICATION_JSON).build();
     }
 
     @DELETE

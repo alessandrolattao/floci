@@ -606,6 +606,15 @@ class ApiGatewayV2DomainCfnProvisionerTest {
     }
 
     @Test
+    void mappingDeleteByThePrimaryIdentifierWithItsRecordedDomainAddressesTheMapping() {
+        // Cloud Control keys what it created by the primary identifier, and deletes it with the
+        // attributes the create recorded, the domain among them.
+        provisioner.delete(provisionedMapping(V1_MAPPING_ID + "|" + DOMAIN, DOMAIN), REGION);
+
+        verify(apiGateway).deleteApiMapping(REGION, DOMAIN, V1_MAPPING_ID);
+    }
+
+    @Test
     void mappingDeleteByABareIdAnswersNotFound() {
         // A bare id names no domain to look in; the stack path treats NotFoundException as already
         // deleted, and Cloud Control reports it instead of claiming a delete that did not happen.

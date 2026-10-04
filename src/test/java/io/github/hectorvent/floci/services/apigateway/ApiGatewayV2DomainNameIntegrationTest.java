@@ -507,7 +507,8 @@ class ApiGatewayV2DomainNameIntegrationTest {
             .post("/v2/domainnames")
         .then()
             .statusCode(400)
-            .body("message", is(message));
+            // Measured against API Gateway (eu-west-1, 2026-10-04): a v2 create names the endpoint type.
+            .body("message", is("EDGE endpoint type is not supported for APIGatewayV2 domainName"));
     }
 
     @Test
@@ -533,6 +534,104 @@ class ApiGatewayV2DomainNameIntegrationTest {
         .then()
             .statusCode(400)
             .body(containsString("TLS 1.2"));
+    }
+
+    /** Measured against API Gateway (eu-west-1, 2026-10-04): what an update leaves out keeps its value. */
+    @Test
+    @Order(14)
+    void updateApiMappingChangesOnlyWhatItNames() {
+        String domain = "patch-mapping.example.com";
+        createRegionalDomain(domain);
+        given()
+            .contentType(ContentType.JSON)
+            .body("{\"stageName\":\"s2\"}")
+        .when()
+            .post("/v2/apis/" + apiId + "/stages")
+        .then()
+            .statusCode(201);
+        String id = given()
+                .contentType(ContentType.JSON)
+                .body("{\"apiId\":\"%s\",\"stage\":\"$default\",\"apiMappingKey\":\"patched\"}".formatted(apiId))
+            .when()
+                .post("/v2/domainnames/" + domain + "/apimappings")
+            .then()
+                .statusCode(201)
+                .extract().path("apiMappingId");
+
+        given()
+            .contentType(ContentType.JSON)
+            .body("{\"apiId\":\"%s\",\"stage\":\"s2\"}".formatted(apiId))
+        .when()
+            .patch("/v2/domainnames/" + domain + "/apimappings/" + id)
+        .then()
+            .statusCode(200)
+            .body("apiMappingId", is(id))
+            .body("apiMappingKey", is("patched"))
+            .body("stage", is("s2"));
+
+        given()
+            .contentType(ContentType.JSON)
+            .body("{\"apiId\":\"%s\",\"apiMappingKey\":\"patched-again\"}".formatted(apiId))
+        .when()
+            .patch("/v2/domainnames/" + domain + "/apimappings/" + id)
+        .then()
+            .statusCode(200)
+            .body("apiMappingId", is(id))
+            .body("apiMappingKey", is("patched-again"))
+            .body("stage", is("s2"));
+
+        given()
+            .contentType(ContentType.JSON)
+            .body("{\"apiId\":\"%s\"}".formatted(apiId))
+        .when()
+            .patch("/v2/domainnames/" + domain + "/apimappings/zzzzzz")
+        .then()
+            .statusCode(404);
+    }
+
+    /** Measured against API Gateway (eu-west-1, 2026-10-04): an HTTP API domain stays regional. */
+    @Test
+    @Order(14)
+    void updateDomainNameKeepsTheDomainRegional() {
+        String domain = "patch-domain.example.com";
+        createRegionalDomain(domain);
+        given()
+            .contentType(ContentType.JSON)
+            .body("""
+                    {"domainNameConfigurations":[
+                        {"certificateArn":"arn:aws:acm:us-east-1:000000000000:certificate/def","endpointType":"PRIVATE"}]}
+                    """)
+        .when()
+            .patch("/v2/domainnames/" + domain)
+        .then()
+            .statusCode(200)
+            .body("domainNameConfigurations[0].endpointType", is("REGIONAL"))
+            .body("domainNameConfigurations[0].certificateArn", containsString("certificate/def"));
+
+        given()
+            .contentType(ContentType.JSON)
+            .body("""
+                    {"domainNameConfigurations":[
+                        {"certificateArn":"arn:aws:acm:us-east-1:000000000000:certificate/def","endpointType":"EDGE"}]}
+                    """)
+        .when()
+            .patch("/v2/domainnames/" + domain)
+        .then()
+            .statusCode(400)
+            .body("message", is("EDGE endpoint type is not supported for APIGatewayV2 domainName"));
+    }
+
+    private static void createRegionalDomain(String domain) {
+        given()
+            .contentType(ContentType.JSON)
+            .body("""
+                    {"domainName":"%s","domainNameConfigurations":[
+                        {"certificateArn":"arn:aws:acm:us-east-1:000000000000:certificate/abc","endpointType":"REGIONAL"}]}
+                    """.formatted(domain))
+        .when()
+            .post("/v2/domainnames")
+        .then()
+            .statusCode(201);
     }
 
     private static org.hamcrest.Matcher<Iterable<? super String>> hasItemEqualTo(String value) {

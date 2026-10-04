@@ -87,6 +87,13 @@ public class ApiGatewayV2DomainCfnProvisioner implements CfnResourceProvisioner 
 
     @Override
     public void delete(StackResource resource, String region) {
+        String physicalId = resource.getPhysicalId();
+        if (API_MAPPING_TYPE.equals(resource.getResourceType()) && physicalId != null
+                && physicalId.contains(IDENTIFIER_SEPARATOR)) {
+            // What Cloud Control created, keyed by the primary identifier, <ApiMappingId>|<DomainName>.
+            deleteMappingByIdentifier(physicalId, region);
+            return;
+        }
         if (API_MAPPING_TYPE.equals(resource.getResourceType()) && resource.getAttributes() != null) {
             String domainName = resource.getAttributes().get(MAPPING_DOMAIN_NAME_ATTR);
             if (!isBlank(domainName)) {

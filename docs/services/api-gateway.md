@@ -571,8 +571,8 @@ Routes carrying `authorizationType: AWS_IAM`: including those an OpenAPI import 
 | **Stages** | CreateStage, GetStage, GetStages, UpdateStage, DeleteStage |
 | **Deployments** | CreateDeployment, GetDeployment, GetDeployments, UpdateDeployment, DeleteDeployment |
 | **Models** | CreateModel, GetModel, GetModels, UpdateModel, DeleteModel |
-| **Domain Names** | CreateDomainName, GetDomainName, GetDomainNames, DeleteDomainName |
-| **API Mappings** | CreateApiMapping, GetApiMapping, GetApiMappings, DeleteApiMapping |
+| **Domain Names** | CreateDomainName, GetDomainName, GetDomainNames, UpdateDomainName, DeleteDomainName |
+| **API Mappings** | CreateApiMapping, GetApiMapping, GetApiMappings, UpdateApiMapping, DeleteApiMapping |
 | **VPC Links** | CreateVpcLink, GetVpcLink, GetVpcLinks, DeleteVpcLink |
 | **Tags** | TagResource, UntagResource, GetTags |
 
@@ -583,13 +583,19 @@ described under [Custom Domain Names](#custom-domain-names); an API mapping send
 the mapped stage of an HTTP, WebSocket or REST API. A REST API can be mapped under a key with
 several levels, such as `orders/v1`, which only the v2 API creates.
 
-`CreateDomainName` takes exactly one domain name configuration and refuses mutual TLS, ownership
-verification certificates, an IP address type other than `ipv4` and a routing mode other than
-`API_MAPPING_ONLY`. As on AWS, the v2 API does not manage an edge-optimized domain, an HTTP API or a
-key with several levels needs a domain on the `TLS_1_2` security policy (so such a domain cannot
-leave it), a WebSocket API cannot share a domain with an HTTP or REST API, and a key holds only
-letters, digits and `$-_.+!*'()/`, at most 300 of them. A mapping keeps its `apiMappingId` when its
-key changes.
+`CreateDomainName` and `UpdateDomainName` take exactly one domain name configuration and refuse
+mutual TLS, ownership verification certificates, an IP address type other than `ipv4` and a routing
+mode other than `API_MAPPING_ONLY`; an update replaces the configuration as a whole. As on AWS, a v2
+domain is regional: the `EDGE` endpoint type is refused, and any other one, `PRIVATE` included,
+gives a `REGIONAL` domain. The v2 API does not manage an edge-optimized domain, an HTTP API or a key
+with several levels needs a domain on the `TLS_1_2` security policy (so such a domain cannot leave
+it), and a WebSocket API cannot share a domain with an HTTP or REST API.
+
+A mapping key holds letters, digits and `$-_.+!*'(),`, with `/` between its levels, at most 300
+characters; it does not start or end with `/` or hold `//`. No key, an empty one, or on a create one
+of whitespace only, is the root mapping. `UpdateApiMapping` changes only what it names, and a
+mapping keeps its `apiMappingId` when its key changes. The keys and their messages were measured
+against API Gateway.
 
 Templates can create domains and mappings with `AWS::ApiGatewayV2::DomainName` and
 `AWS::ApiGatewayV2::ApiMapping`; see [CloudFormation](cloudformation.md).
@@ -653,7 +659,7 @@ DELETE /execute-api/{apiId}/{stageName}/@connections/{connectionId}  — Disconn
 
 ### Not Implemented
 
-- `ExportApi`, `UpdateDomainName`, `UpdateApiMapping`
+- `ExportApi`
 - `UpdateVpcLink` — the other four VPC Link operations are implemented; see the table above
 
 ### Examples

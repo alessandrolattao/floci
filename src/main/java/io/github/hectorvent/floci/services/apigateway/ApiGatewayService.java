@@ -135,9 +135,14 @@ public class ApiGatewayService implements ResourceProvider {
     private static final String V2_EDGE_DOMAIN_MESSAGE = "Only REGIONAL domain names can be managed through the "
             + "API Gateway V2 API. For EDGE domain names, please use the API Gateway V1 API. Also note that only REST "
             + "APIs can be attached to EDGE domain names.";
-    /** The characters AWS allows in an API mapping key, and the most of them it takes. */
-    private static final Pattern API_MAPPING_KEY = Pattern.compile("[A-Za-z0-9$\\-_.+!*'()/]+");
+    /** What AWS answers for a v2 domain created or updated with the EDGE endpoint type. */
+    private static final String V2_EDGE_ENDPOINT_TYPE_MESSAGE =
+            "EDGE endpoint type is not supported for APIGatewayV2 domainName";
+    /** The characters AWS allows in an API mapping key, its level separator included, and the most it takes. */
+    private static final Pattern API_MAPPING_KEY = Pattern.compile("[A-Za-z0-9$\\-_.+!*'(),/]+");
     private static final int MAX_API_MAPPING_KEY_LENGTH = 300;
+    private static final String MAPPING_KEY_SLASHES_MESSAGE =
+            "API mapping key should not start with a '/' or have consecutive '/'s.";
 
     ApiGatewayService(StorageFactory storageFactory, EmulatorConfig config,
                       TlsCertificateManager certificateManager) {
@@ -2415,7 +2420,7 @@ public class ApiGatewayService implements ResourceProvider {
                     "Invalid input. Expected one domain name configuration", 400);
         }
         if ("EDGE".equals(configuration.get("endpointType"))) {
-            throw new AwsException("BadRequestException", V2_EDGE_DOMAIN_MESSAGE, 400);
+            throw new AwsException("BadRequestException", V2_EDGE_ENDPOINT_TYPE_MESSAGE, 400);
         }
         rejectUnemulatedDomainInputs(request, configuration);
         Map<String, Object> v1Request = new HashMap<>();
@@ -2423,7 +2428,9 @@ public class ApiGatewayService implements ResourceProvider {
         copyIfPresent(request, v1Request, "tags", "tags");
         copyIfPresent(configuration, v1Request, "certificateArn", "certificateArn");
         copyIfPresent(configuration, v1Request, "certificateName", "certificateName");
-        copyIfPresent(configuration, v1Request, "endpointType", "endpointType");
+        // An HTTP API domain is regional: API Gateway creates or keeps any other endpoint type it is
+        // given, PRIVATE or one it does not know, as REGIONAL (measured, eu-west-1, 2026-10-04).
+        v1Request.put("endpointType", "REGIONAL");
         copyIfPresent(configuration, v1Request, "securityPolicy", "securityPolicy");
         return v1Request;
     }
@@ -2501,6 +2508,7 @@ public class ApiGatewayService implements ResourceProvider {
                                           String apiId, String stage, Set<String> excludedIds) {
         // A mapping to an API or stage that does not exist would route nowhere, so AWS refuses it
         // rather than answering 201 with something unusable.
+        requireValidApiMappingKey(apiMappingKey, false);
         MappingTarget target = requireMappingTarget(region, apiId, stage);
         String basePath = canonicalBasePath(apiMappingKey);
         synchronized (domainNameLock) {
@@ -2523,6 +2531,7 @@ public class ApiGatewayService implements ResourceProvider {
      */
     public StoredMapping updateApiMapping(String region, String domainName, String apiMappingId,
                                           String apiMappingKey, String apiId, String stage) {
+        requireValidApiMappingKey(apiMappingKey, true);
         MappingTarget target = requireMappingTarget(region, apiId, stage);
         String basePath = canonicalBasePath(apiMappingKey);
         synchronized (domainNameLock) {
@@ -2596,14 +2605,40 @@ public class ApiGatewayService implements ResourceProvider {
      * API, a key holds only the characters AWS allows and at most 300 of them, and an HTTP API or a
      * key with more than one level needs a domain on the TLS 1.2 security policy.
      */
+    /**
+     * Refuses an API mapping key that API Gateway refuses, with its messages (measured, eu-west-1,
+     * 2026-10-04). No key or an empty one is the root mapping, and so is a key of whitespace only
+     * on a create; an update refuses that one.
+     */
+    private static void requireValidApiMappingKey(String apiMappingKey, boolean update) {
+        if (apiMappingKey == null || apiMappingKey.isEmpty()) {
+            return;
+        }
+        if (apiMappingKey.isBlank()) {
+            if (update) {
+                throw new AwsException("BadRequestException", MAPPING_KEY_SLASHES_MESSAGE, 400);
+            }
+            return;
+        }
+        if (apiMappingKey.length() > MAX_API_MAPPING_KEY_LENGTH) {
+            throw new AwsException("BadRequestException",
+                    "ApiMapping key length must be under " + MAX_API_MAPPING_KEY_LENGTH + " characters.", 400);
+        }
+        if (apiMappingKey.endsWith("/")) {
+            throw new AwsException("BadRequestException", "API mapping key should not end with a '/'.", 400);
+        }
+        if (apiMappingKey.startsWith("/") || apiMappingKey.contains("//")) {
+            throw new AwsException("BadRequestException", MAPPING_KEY_SLASHES_MESSAGE, 400);
+        }
+        if (!API_MAPPING_KEY.matcher(apiMappingKey).matches()) {
+            throw new AwsException("BadRequestException",
+                    "An API mapping key may contain only letters, numbers and one of $-_.+!*'(), characters.", 400);
+        }
+    }
+
     private static void requireMappingAllowed(CustomDomain domain, String basePath, String apiType) {
         requireRegionalDomain(domain);
         boolean root = "(none)".equals(basePath);
-        if (!root && (basePath.length() > MAX_API_MAPPING_KEY_LENGTH || !API_MAPPING_KEY.matcher(basePath).matches())) {
-            throw new AwsException("BadRequestException", "Invalid API mapping key specified: " + basePath
-                    + ". It can contain only letters, numbers and the characters $-_.+!*'()/, up to "
-                    + MAX_API_MAPPING_KEY_LENGTH + " characters", 400);
-        }
         if (!TLS_1_2.equals(securityPolicyOf(domain))) {
             if ("HTTP".equals(apiType)) {
                 throw new AwsException("BadRequestException",

@@ -43,6 +43,9 @@ class ApiGatewayV2ApiMappingServiceTest {
             + "API. For EDGE domain names, please use the API Gateway V1 API. Also note that only REST APIs can be "
             + "attached to EDGE domain names.";
 
+    private static final String V2_EDGE_ENDPOINT_MESSAGE = "EDGE endpoint type is not supported for APIGatewayV2 "
+            + "domainName";
+
     private ApiGatewayService service;
     private ApiGatewayV2Service v2Service;
 
@@ -187,8 +190,58 @@ class ApiGatewayV2ApiMappingServiceTest {
 
         assertBadRequest(EDGE_MESSAGE, () -> service.createApiMapping(REGION, DOMAIN, "v1", restApi, "prod"));
         assertBadRequest(EDGE_MESSAGE, () -> service.getApiMappings(REGION, DOMAIN));
-        assertBadRequest(EDGE_MESSAGE, () -> service.createV2DomainName(REGION, Map.of("domainName", OTHER_DOMAIN,
-                "domainNameConfigurations", List.of(Map.of("endpointType", "EDGE")))));
+        assertBadRequest(V2_EDGE_ENDPOINT_MESSAGE, () -> service.createV2DomainName(REGION, Map.of("domainName",
+                OTHER_DOMAIN, "domainNameConfigurations", List.of(Map.of("endpointType", "EDGE")))));
+    }
+
+    /**
+     * Measured against API Gateway (eu-west-1, 2026-10-04): an HTTP API custom domain is regional.
+     * A create or update with an endpoint type of PRIVATE or one API Gateway does not know gives a
+     * REGIONAL domain; EDGE is refused.
+     */
+    @Test
+    void aV2DomainIsRegionalWhateverOtherEndpointTypeItIsGiven() {
+        service.createV2DomainName(REGION, Map.of("domainName", DOMAIN, "domainNameConfigurations",
+                List.of(Map.of("certificateArn", CERTIFICATE_ARN, "endpointType", "PRIVATE"))));
+        assertEquals("REGIONAL", service.getDomainName(REGION, DOMAIN).getEndpointConfigurationType());
+
+        service.replaceV2DomainConfiguration(REGION, DOMAIN, Map.of("domainNameConfigurations",
+                List.of(Map.of("certificateArn", CERTIFICATE_ARN, "endpointType", "FOO"))));
+        assertEquals("REGIONAL", service.getDomainName(REGION, DOMAIN).getEndpointConfigurationType());
+
+        assertBadRequest(V2_EDGE_ENDPOINT_MESSAGE, () -> service.replaceV2DomainConfiguration(REGION, DOMAIN,
+                Map.of("domainNameConfigurations",
+                        List.of(Map.of("certificateArn", CERTIFICATE_ARN, "endpointType", "EDGE")))));
+        assertEquals("REGIONAL", service.getDomainName(REGION, DOMAIN).getEndpointConfigurationType());
+    }
+
+    /** Measured against API Gateway (eu-west-1, 2026-10-04), its messages included. */
+    @Test
+    void anApiMappingKeyIsCheckedAsApiGatewayChecksIt() {
+        v2Domain(DOMAIN);
+        String httpApi = api("HTTP", "prod");
+        String endSlash = "API mapping key should not end with a '/'.";
+        String slashes = "API mapping key should not start with a '/' or have consecutive '/'s.";
+        String characters = "An API mapping key may contain only letters, numbers and one of $-_.+!*'(), characters.";
+
+        assertBadRequest(endSlash, () -> service.createApiMapping(REGION, DOMAIN, "/", httpApi, "prod"));
+        assertBadRequest(endSlash, () -> service.createApiMapping(REGION, DOMAIN, "a/", httpApi, "prod"));
+        assertBadRequest(slashes, () -> service.createApiMapping(REGION, DOMAIN, "/a", httpApi, "prod"));
+        assertBadRequest(slashes, () -> service.createApiMapping(REGION, DOMAIN, "a//b", httpApi, "prod"));
+        assertBadRequest(characters, () -> service.createApiMapping(REGION, DOMAIN, " a", httpApi, "prod"));
+        assertBadRequest(characters, () -> service.createApiMapping(REGION, DOMAIN, "a~b", httpApi, "prod"));
+        assertBadRequest("ApiMapping key length must be under 300 characters.",
+                () -> service.createApiMapping(REGION, DOMAIN, "a".repeat(301), httpApi, "prod"));
+
+        assertEquals("a,b$", service.createApiMapping(REGION, DOMAIN, "a,b$", httpApi, "prod").storedPath());
+        assertEquals("a".repeat(300),
+                service.createApiMapping(REGION, DOMAIN, "a".repeat(300), httpApi, "prod").storedPath());
+        // A key of whitespace only is the root on a create, and refused on an update.
+        assertEquals("(none)", ApiGatewayService.canonicalBasePath(
+                service.createApiMapping(REGION, DOMAIN, "   ", httpApi, "prod").storedPath()));
+        String id = service.createApiMapping(REGION, DOMAIN, "v1", httpApi, "prod").apiMappingId();
+        assertBadRequest(slashes, () -> service.updateApiMapping(REGION, DOMAIN, id, "  ", httpApi, "prod"));
+        assertBadRequest(endSlash, () -> service.updateApiMapping(REGION, DOMAIN, id, "/", httpApi, "prod"));
     }
 
     @Test
