@@ -2383,6 +2383,22 @@ public class ApiGatewayService implements ResourceProvider {
     }
 
     /**
+     * {@code UpdateDomainName} through the v2 API: a body with a configuration replaces the domain's
+     * as {@link #replaceV2DomainConfiguration} does. One without changes nothing, after the same
+     * refusals: of what Floci does not emulate, and of an edge-optimized domain, which the v2 API
+     * does not manage.
+     */
+    public CustomDomain updateV2DomainName(String region, String domainName, Map<String, Object> request) {
+        if (request.get("domainNameConfigurations") != null) {
+            return replaceV2DomainConfiguration(region, domainName, request);
+        }
+        rejectUnemulatedDomainInputs(request, Map.of());
+        CustomDomain domain = getDomainName(region, domainName);
+        requireRegionalDomain(domain);
+        return domain;
+    }
+
+    /**
      * Drives a domain's configuration to the one in a v2 {@code CreateDomainName} body, validated the
      * same way. This is what an update of {@code DomainNameConfigurations} does on AWS: the list is
      * replaced as a whole, so a certificate the body leaves out is cleared and a security policy it
@@ -2394,6 +2410,7 @@ public class ApiGatewayService implements ResourceProvider {
         String securityPolicy = (String) v1Request.getOrDefault("securityPolicy", TLS_1_2);
         synchronized (domainNameLock) {
             CustomDomain domain = getDomainName(region, domainName);
+            requireRegionalDomain(domain);
             if (!Objects.equals(securityPolicy, domain.getSecurityPolicy())) {
                 requireMappingsAllowSecurityPolicy(region, domainName, securityPolicy);
             }

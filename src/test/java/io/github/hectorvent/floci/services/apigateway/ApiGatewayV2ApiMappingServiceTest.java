@@ -215,6 +215,25 @@ class ApiGatewayV2ApiMappingServiceTest {
         assertEquals("REGIONAL", service.getDomainName(REGION, DOMAIN).getEndpointConfigurationType());
     }
 
+    /**
+     * UpdateDomainName through the v2 API is a v2 call like the others: refused on an
+     * edge-optimized domain, and refused for what Floci does not emulate even without a
+     * configuration to replace.
+     */
+    @Test
+    void aV2UpdateRefusesAnEdgeDomainAndWhatIsNotEmulated() {
+        v1Domain(DOMAIN, "EDGE", "TLS_1_2");
+        assertBadRequest(EDGE_MESSAGE, () -> service.updateV2DomainName(REGION, DOMAIN, Map.of(
+                "domainNameConfigurations",
+                List.of(Map.of("certificateArn", CERTIFICATE_ARN, "endpointType", "REGIONAL")))));
+        assertEquals("EDGE", service.getDomainName(REGION, DOMAIN).getEndpointConfigurationType());
+
+        v2Domain(OTHER_DOMAIN);
+        assertBadRequest("Mutual TLS authentication is not supported", () -> service.updateV2DomainName(REGION,
+                OTHER_DOMAIN, Map.of("mutualTlsAuthentication", Map.of("truststoreUri", "s3://bucket/key"))));
+        assertEquals(OTHER_DOMAIN, service.updateV2DomainName(REGION, OTHER_DOMAIN, Map.of()).getDomainName());
+    }
+
     /** Measured against API Gateway (eu-west-1, 2026-10-04), its messages included. */
     @Test
     void anApiMappingKeyIsCheckedAsApiGatewayChecksIt() {

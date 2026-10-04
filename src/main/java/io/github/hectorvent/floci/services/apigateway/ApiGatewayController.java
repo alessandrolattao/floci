@@ -1611,9 +1611,7 @@ public class ApiGatewayController {
                                        String body) {
         String region = regionResolver.resolveRegion(headers);
         Map<String, Object> request = readJsonBody(body);
-        CustomDomain domain = request.get("domainNameConfigurations") == null
-                ? service.getDomainName(region, domainName)
-                : service.replaceV2DomainConfiguration(region, domainName, request);
+        CustomDomain domain = service.updateV2DomainName(region, domainName, request);
         return Response.ok(toV2DomainNode(region, domain).toString()).type(MediaType.APPLICATION_JSON).build();
     }
 

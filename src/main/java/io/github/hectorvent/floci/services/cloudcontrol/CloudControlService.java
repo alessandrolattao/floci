@@ -117,8 +117,9 @@ public class CloudControlService {
                 String identifier = created.entrySet().stream()
                         .filter(resource -> resource.getValue() == recovered)
                         .map(Map.Entry::getKey)
-                        .map(key -> key.substring((accountId + "|").length()))
-                        .map(key -> key.substring(key.lastIndexOf('|') + 1))
+                        // account|region|type|identifier: the identifier is everything after the
+                        // third separator, since a compound one holds separators of its own.
+                        .map(key -> key.split("\\|", 4)[3])
                         .findFirst().orElse(normalized.identifier());
                 normalized = new ProgressEvent(normalized.typeName(), identifier, normalized.requestToken(),
                         normalized.operation(), "SUCCESS", null, recovered.model(), accountId);
