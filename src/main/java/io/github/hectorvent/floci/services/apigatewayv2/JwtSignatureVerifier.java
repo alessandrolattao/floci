@@ -22,8 +22,6 @@ import org.apache.hc.core5.http.io.support.ClassicRequestBuilder;
 import org.apache.hc.core5.util.Timeout;
 import org.jboss.logging.Logger;
 
-import javax.net.ssl.SSLContext;
-
 import java.io.IOException;
 import java.math.BigInteger;
 import java.net.InetAddress;
@@ -41,6 +39,8 @@ import java.util.Base64;
 import java.util.Map;
 import java.util.Optional;
 import java.util.concurrent.ConcurrentHashMap;
+
+import javax.net.ssl.SSLContext;
 
 /**
  * Verifies the RS256 signature of a token presented to an HTTP API v2 JWT authorizer, the same
