@@ -65,10 +65,8 @@ class CloudFormationEcsLinuxParametersIntegrationTest {
                   }
                 }
                 """;
-        boolean created = false;
         try {
             createStack(name, template.formatted(name));
-            created = true;
             assertEquals("CREATE_COMPLETE", CfnStackWaits.awaitTerminal(name).status());
 
         given().contentType(ECS_CT)
@@ -89,9 +87,7 @@ class CloudFormationEcsLinuxParametersIntegrationTest {
                 .body("taskDefinition.containerDefinitions[1].name", equalTo("plain"))
                 .body("taskDefinition.containerDefinitions[1]", not(hasKey("linuxParameters")));
         } finally {
-            if (created) {
-                deleteStack(name);
-            }
+            deleteStack(name);
         }
     }
 
@@ -117,15 +113,11 @@ class CloudFormationEcsLinuxParametersIntegrationTest {
                   }
                 }
                 """;
-        boolean created = false;
         try {
             createStack(name, template.formatted(name));
-            created = true;
             assertFargateSwapRefused(name, CfnStackWaits.awaitTerminal(name));
         } finally {
-            if (created) {
-                deleteStack(name);
-            }
+            deleteStack(name);
         }
     }
 
@@ -142,16 +134,15 @@ class CloudFormationEcsLinuxParametersIntegrationTest {
     }
 
     /**
-     * Each run names its stacks and families afresh, so it never meets a stack another run left,
-     * and removes the stack it created in a finally; a create that was refused leaves nothing to
-     * delete, so its failure is the one reported.
+     * Each run names its stacks and families afresh, so it never meets a stack another run left.
+     * The delete is best effort and asserts nothing: it also clears a stack a refused create left
+     * behind, and it never reports a failure in place of the test's own.
      */
     private static void deleteStack(String name) {
         given().contentType("application/x-www-form-urlencoded")
                 .formParam("Action", "DeleteStack")
                 .formParam("StackName", name)
-                .when().post("/").then().statusCode(200);
-        CfnStackWaits.awaitStackDeleted(name);
+                .when().post("/");
     }
 
     private static void createStack(String name, String template) {
