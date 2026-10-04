@@ -64,8 +64,8 @@ class CloudFormationEcsLinuxParametersIntegrationTest {
                   }
                 }
                 """;
-        createStack("cfn-linux-parameters", template);
         try {
+            createStack("cfn-linux-parameters", template);
             assertEquals("CREATE_COMPLETE", CfnStackWaits.awaitTerminal("cfn-linux-parameters").status());
 
         given().contentType(ECS_CT)
@@ -111,8 +111,8 @@ class CloudFormationEcsLinuxParametersIntegrationTest {
                   }
                 }
                 """;
-        createStack("cfn-linux-parameters-fargate", template);
         try {
+            createStack("cfn-linux-parameters-fargate", template);
             assertFargateSwapRefused(CfnStackWaits.awaitTerminal("cfn-linux-parameters-fargate"));
         } finally {
             deleteStack("cfn-linux-parameters-fargate");
@@ -131,7 +131,10 @@ class CloudFormationEcsLinuxParametersIntegrationTest {
                 reasons.toString());
     }
 
-    /** Each test removes its stack, so the fixed names are free when the tests run again. */
+    /**
+     * Each test removes its stack, in a finally that also covers a create that failed, so the
+     * fixed names are free when the tests run again.
+     */
     private static void deleteStack(String name) {
         given().contentType("application/x-www-form-urlencoded")
                 .formParam("Action", "DeleteStack")
