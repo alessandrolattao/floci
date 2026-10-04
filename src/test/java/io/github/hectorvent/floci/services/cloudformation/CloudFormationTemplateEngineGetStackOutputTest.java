@@ -63,6 +63,18 @@ class CloudFormationTemplateEngineGetStackOutputTest {
         assertEquals(List.of(Arrays.asList("Producer", "VpcId", "us-east-1", null)), lookups);
     }
 
+    /**
+     * CloudFormation hands the parameters to the lookup as resolved, whitespace included: a stack
+     * name with spaces then fails DescribeStacks' name constraint, it is not read as another name.
+     */
+    @Test
+    void parameterValues_reachTheLookupUntrimmed() {
+        engine().resolve(json("""
+                {"Fn::GetStackOutput": {"StackName": " Producer ", "OutputName": " VpcId"}}
+                """));
+        assertEquals(List.of(Arrays.asList(" Producer ", " VpcId", "us-east-1", null)), lookups);
+    }
+
     @Test
     void resolveNode_returnsTheOutputAsText() {
         assertEquals(TextNode.valueOf("Producer/VpcId@us-east-1"), engine().resolveNode(json("""

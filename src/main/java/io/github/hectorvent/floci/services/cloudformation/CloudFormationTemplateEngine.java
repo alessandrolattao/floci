@@ -766,7 +766,7 @@ public class CloudFormationTemplateEngine {
         if (value == null || value.isNull()) {
             return "";
         }
-        return resolveIntrinsic(value).trim();
+        return resolveIntrinsic(value);
     }
 
     /**
