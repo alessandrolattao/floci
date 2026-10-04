@@ -274,6 +274,10 @@ set.`, which is what the AWS CLI's `deploy` and the CDK read as "no changes". A 
 `Outputs` or the `Description` alone is an update, and a template with a nested stack is always
 updated, since its child template is read again.
 
+The CDK then deletes that change set, and before its next deploy deletes it again by name. A
+`DeleteChangeSet` for a change set the stack does not have succeeds, as on AWS, whatever the stack's
+status; a stack that does not exist is still a `ValidationError`.
+
 ## Lambda Stack Updates
 
 `AWS::Lambda::Function` resources are reconciled during `UpdateStack` in the same shape as CloudFormation/CDK deployments:

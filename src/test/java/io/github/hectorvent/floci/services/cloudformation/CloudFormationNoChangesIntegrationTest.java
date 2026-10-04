@@ -17,7 +17,10 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
  * and changes nothing, the same template re-indented included, since the template is compared as
  * a document; a CreateChangeSet for it is created FAILED, UNAVAILABLE, with "The submitted
  * information didn't contain changes. Submit different information to create a change set.". A
- * change to the Outputs or the Description alone is an update.
+ * change to the Outputs or the Description alone is an update. The CDK deletes that change set and
+ * deletes it again by name before its next deploy; DeleteChangeSet answers success for a change set
+ * the stack does not have, by name or by ARN, and ValidationError for a stack that does not exist
+ * (measured 2026-10-04).
  */
 @QuarkusTest
 class CloudFormationNoChangesIntegrationTest {
@@ -84,6 +87,39 @@ class CloudFormationNoChangesIntegrationTest {
                 .body(containsString("<ExecutionStatus>UNAVAILABLE</ExecutionStatus>"))
                 .body(containsString("<StatusReason>The submitted information didn"))
                 .body(containsString("t contain changes. Submit different information to create a change set.</StatusReason>"));
+    }
+
+    @Test
+    void theChangeSetTheCdkDeletedCanBeDeletedAgain() {
+        String template = TEMPLATE.formatted("delete-again-topic");
+        create("delete-again", template);
+        String id = given().contentType("application/x-www-form-urlencoded")
+                .formParam("Action", "CreateChangeSet")
+                .formParam("StackName", "delete-again")
+                .formParam("ChangeSetName", "cdk-deploy-change-set")
+                .formParam("ChangeSetType", "UPDATE")
+                .formParam("TemplateBody", template)
+                .when().post("/").then().statusCode(200)
+                .extract().xmlPath().getString("CreateChangeSetResponse.CreateChangeSetResult.Id");
+
+        deleteChangeSet("delete-again", "cdk-deploy-change-set").statusCode(200);
+        deleteChangeSet("delete-again", "cdk-deploy-change-set")
+                .statusCode(200)
+                .body(containsString("<DeleteChangeSetResult/>"));
+        deleteChangeSet("delete-again", id).statusCode(200);
+        deleteChangeSet("delete-again-missing", "cdk-deploy-change-set")
+                .statusCode(400)
+                .body(containsString("<Code>ValidationError</Code>"));
+
+        assertEquals("CREATE_COMPLETE", CfnStackWaits.awaitTerminal("delete-again").status());
+    }
+
+    private static ValidatableResponse deleteChangeSet(String stackName, String changeSetName) {
+        return given().contentType("application/x-www-form-urlencoded")
+                .formParam("Action", "DeleteChangeSet")
+                .formParam("StackName", stackName)
+                .formParam("ChangeSetName", changeSetName)
+                .when().post("/").then();
     }
 
     private static void create(String stackName, String template) {

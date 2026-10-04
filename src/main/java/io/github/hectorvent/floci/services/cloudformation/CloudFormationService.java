@@ -1047,7 +1047,13 @@ public class CloudFormationService implements ResourceProvider {
     public void deleteChangeSet(String stackName, String changeSetName, String region) {
         String accountId = currentAccount();
         Stack stack = getStackForChangeSet(stackName, changeSetName, region, accountId);
-        ChangeSet cs = getChangeSetOrThrow(stack, changeSetName, region, accountId);
+        ChangeSet cs = findChangeSet(stack, changeSetName, region, accountId);
+        if (cs == null) {
+            // CloudFormation answers success for a change set the stack does not have, whatever
+            // the stack's status. The AWS CDK deletes its change set by name before every deploy
+            // and relies on it, since it deletes the one that had nothing to change.
+            return;
+        }
         stack.getChangeSets().remove(cs.getChangeSetName());
         persistStack(stack);
     }
@@ -3057,12 +3063,21 @@ public class CloudFormationService implements ResourceProvider {
 
     private ChangeSet getChangeSetOrThrow(Stack stack, String changeSetNameOrArn,
                                           String region, String accountId) {
+        ChangeSet changeSet = findChangeSet(stack, changeSetNameOrArn, region, accountId);
+        if (changeSet == null) {
+            throw new AwsException("ChangeSetNotFoundException",
+                    "ChangeSet [" + changeSetNameOrArn + "] does not exist", 400);
+        }
+        return changeSet;
+    }
+
+    private ChangeSet findChangeSet(Stack stack, String changeSetNameOrArn,
+                                    String region, String accountId) {
         ChangeSet changeSet = stack.getChangeSets().get(
                 resolveChangeSetName(changeSetNameOrArn, region, accountId));
         if (changeSet == null || (changeSetNameOrArn != null && changeSetNameOrArn.startsWith("arn:")
                 && !changeSetNameOrArn.equals(changeSet.getChangeSetId()))) {
-            throw new AwsException("ChangeSetNotFoundException",
-                    "ChangeSet [" + changeSetNameOrArn + "] does not exist", 400);
+            return null;
         }
         return changeSet;
     }

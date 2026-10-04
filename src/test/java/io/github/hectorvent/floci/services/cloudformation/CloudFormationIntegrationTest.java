@@ -2766,8 +2766,10 @@ class CloudFormationIntegrationTest {
         return xml.substring(xml.lastIndexOf("<member>", idAt), xml.indexOf("</member>", idAt));
     }
 
+    // Measured against CloudFormation (eu-west-1, 2026-10-04): a change set the stack does not
+    // have, on a stack in REVIEW_IN_PROGRESS as on one in CREATE_COMPLETE, is deleted with success.
     @Test
-    void deleteChangeSet_nonExistentChangeSet_returnsError() {
+    void deleteChangeSet_nonExistentChangeSet_succeeds() {
         String template = """
             {
               "Resources": {
@@ -2794,7 +2796,6 @@ class CloudFormationIntegrationTest {
         .then()
             .statusCode(200);
 
-        // Attempt to delete a changeset that does not exist
         given()
             .contentType("application/x-www-form-urlencoded")
             .formParam("Action", "DeleteChangeSet")
@@ -2803,8 +2804,18 @@ class CloudFormationIntegrationTest {
         .when()
             .post("/")
         .then()
-            .statusCode(400)
-            .body(containsString("ChangeSetNotFoundException"));
+            .statusCode(200)
+            .body(containsString("<DeleteChangeSetResult/>"));
+
+        given()
+            .contentType("application/x-www-form-urlencoded")
+            .formParam("Action", "DescribeChangeSet")
+            .formParam("StackName", "cs-error-stack")
+            .formParam("ChangeSetName", "existing-changeset")
+        .when()
+            .post("/")
+        .then()
+            .statusCode(200);
     }
 
     @Test
