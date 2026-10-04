@@ -44,27 +44,30 @@ class CloudFormationEcsLinuxParametersTest {
      */
     @AfterAll
     static void cleanup() {
-        if (cloudFormation == null || ecs == null) {
-            return;
-        }
         AssertionError failure = new AssertionError("Deleting the LinuxParameters stacks failed");
         boolean interrupted = false;
         try {
-            for (String stack : STACKS) {
-                try {
-                    cloudFormation.deleteStack(r -> r.stackName(stack));
-                    waitForDeleted(stack);
-                } catch (InterruptedException e) {
-                    // Recorded and restored below, so the remaining stacks are still deleted.
-                    interrupted = true;
-                    failure.addSuppressed(e);
-                } catch (RuntimeException | AssertionError e) {
-                    failure.addSuppressed(e);
+            if (cloudFormation != null) {
+                for (String stack : STACKS) {
+                    try {
+                        cloudFormation.deleteStack(r -> r.stackName(stack));
+                        waitForDeleted(stack);
+                    } catch (InterruptedException e) {
+                        // Recorded and restored below, so the remaining stacks are still deleted.
+                        interrupted = true;
+                        failure.addSuppressed(e);
+                    } catch (RuntimeException | AssertionError e) {
+                        failure.addSuppressed(e);
+                    }
                 }
             }
         } finally {
-            cloudFormation.close();
-            ecs.close();
+            if (cloudFormation != null) {
+                cloudFormation.close();
+            }
+            if (ecs != null) {
+                ecs.close();
+            }
         }
         if (interrupted) {
             Thread.currentThread().interrupt();
