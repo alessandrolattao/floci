@@ -146,10 +146,53 @@ class CloudFormationEventsRuleTargetIntegrationTest {
         assertEquals("o-9", new JsonPath(received.getString("Messages[0].Body")).getString("detail.orderId"));
     }
 
+    /**
+     * With the real engine: a member whose Fn::If takes AWS::NoValue is left out of the target,
+     * and a literal empty string, a tag's Value, is kept.
+     */
+    @Test
+    void aMemberAnFnIfDropsIsLeftOutAndAnEmptyStringKept() {
+        String template = """
+                {"Conditions": {"Never": {"Fn::Equals": ["a", "b"]}},
+                 "Resources": {"Rule": {"Type": "AWS::Events::Rule", "Properties": {
+                   "Name": "cfn-rule-targets-novalue",
+                   "EventPattern": {"source": ["cfn.rule.targets.novalue"]},
+                   "Targets": [{"Id": "Ecs", "Arn": "arn:aws:ecs:us-east-1:000000000000:cluster/jobs",
+                     "RoleArn": {"Fn::If": ["Never", "arn:aws:iam::000000000000:role/never",
+                                            {"Ref": "AWS::NoValue"}]},
+                     "RetryPolicy": {"MaximumRetryAttempts": {"Fn::If": ["Never", 3, {"Ref": "AWS::NoValue"}]},
+                                     "MaximumEventAgeInSeconds": 120},
+                     "EcsParameters": {"TaskDefinitionArn": "arn:aws:ecs:us-east-1:000000000000:task-definition/job:1",
+                                       "TagList": [{"Key": "team", "Value": ""}]}}]}}}}
+                """;
+        given().contentType("application/x-www-form-urlencoded")
+                .formParam("Action", "CreateStack")
+                .formParam("StackName", "cfn-rule-targets-novalue")
+                .formParam("TemplateBody", template)
+                .when().post("/").then().statusCode(200);
+        try {
+            assertEquals("CREATE_COMPLETE", CfnStackWaits.awaitTerminal("cfn-rule-targets-novalue").status());
+            listTargets("cfn-rule-targets-novalue", "default")
+                    .body("Targets[0]", not(hasKey("RoleArn")))
+                    .body("Targets[0].RetryPolicy", not(hasKey("MaximumRetryAttempts")))
+                    .body("Targets[0].RetryPolicy.MaximumEventAgeInSeconds", equalTo(120))
+                    .body("Targets[0].EcsParameters.Tags[0].Value", equalTo(""));
+        } finally {
+            given().contentType("application/x-www-form-urlencoded")
+                    .formParam("Action", "DeleteStack")
+                    .formParam("StackName", "cfn-rule-targets-novalue")
+                    .when().post("/").then().statusCode(200);
+        }
+    }
+
     private static ValidatableResponse listTargets(String rule) {
+        return listTargets(rule, BUS);
+    }
+
+    private static ValidatableResponse listTargets(String rule, String bus) {
         return given().contentType(EB_CT)
                 .header("X-Amz-Target", "AWSEvents.ListTargetsByRule")
-                .body("{\"Rule\":\"" + rule + "\",\"EventBusName\":\"" + BUS + "\"}")
+                .body("{\"Rule\":\"" + rule + "\",\"EventBusName\":\"" + bus + "\"}")
                 .when().post("/").then().statusCode(200);
     }
 }
