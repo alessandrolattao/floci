@@ -1007,7 +1007,8 @@ final class CognitoAuthFlowHandler {
         Map<String, Object> customMessage = fireCustomMessage(pool, client, user, "CustomMessage_Authentication",
                 Map.of());
         Map<String, String> challengeParams = new HashMap<>(
-                service.issueSignInOtp(pool, user, purpose, attributeName, deliveryMedium, customMessage));
+                service.issueSignInOtp(pool, user, purpose, attributeName, deliveryMedium, customMessage,
+                        client.getClientId()));
         challengeParams.put("USERNAME", user.getUsername());
         return userAuthChallengeResponse(pool, client, user, challengeName, available, challengeParams);
     }
@@ -2136,7 +2137,7 @@ final class CognitoAuthFlowHandler {
                 Map.of());
         Map<String, String> parameters = new HashMap<>(service.issueMfaCode(pool, user,
                 sms ? VerificationCode.Purpose.SMS_MFA : VerificationCode.Purpose.EMAIL_MFA,
-                sms ? "phone_number" : "email", sms ? "SMS" : "EMAIL", customMessage));
+                sms ? "phone_number" : "email", sms ? "SMS" : "EMAIL", customMessage, client.getClientId()));
         parameters.put("USERNAME", user.getUsername());
         Map<String, Object> result = new HashMap<>();
         result.put("ChallengeName", factor);

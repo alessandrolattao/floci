@@ -14,6 +14,19 @@ where `errorMessage` is taken verbatim from the function's error payload, as on 
 
 Sign-in by a disabled user fails with `NotAuthorizedException` (`User is disabled.`), as on AWS.
 
+A pool whose `LambdaConfig` names a `CustomEmailSender` (with a `KMSKeyID`) hands it every email
+it would otherwise send through SES: sign-up, resent and forgotten-password codes, attribute
+verification codes, email sign-in and MFA codes, and `AdminCreateUser` invitations. The function is
+invoked asynchronously, so the request neither waits for it nor fails with it. Its event is AWS's:
+`triggerSource` `CustomEmailSender_SignUp`, `_ResendCode`, `_ForgotPassword`, `_UpdateUserAttribute`,
+`_VerifyUserAttribute`, `_Authentication` or `_AdminCreateUser`, and a `request` of type
+`customEmailSenderRequestV1` whose `code` is an AWS Encryption SDK message (algorithm suite
+`AES_256_GCM_IV12_TAG16_HKDF_SHA384_ECDSA_P384`) sealed under the key with the encryption context
+`userpool-id`, so the function opens it with the Encryption SDK and an AWS KMS keyring under
+`REQUIRE_ENCRYPT_ALLOW_DECRYPT`, as on AWS. An invitation carries the temporary password, or no
+code for a user created without one, and names the user as the request did, with `clientId`
+`CLIENT_ID_NOT_APPLICABLE`. SMS still goes through SNS.
+
 `CreateUserPool` supports overriding several values using user-pool tags **only** at creation time:
 * `floci:override-id`, to pin the resulting `UserPool.Id`. Because a pinned id is caller-chosen it can be reused, which AWS never does. `DeleteUserPool` therefore deletes everything the pool owns (users, groups, app clients, resource servers, revoked token records and outstanding verification codes) so a pool recreated on the same id starts empty rather than inheriting the deleted pool's password hashes and client secrets.
 * `floci:override-cognito-client-id`
