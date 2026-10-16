@@ -14,6 +14,7 @@ import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.ValueSource;
 
 import java.util.ArrayList;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 
@@ -734,6 +735,63 @@ class CloudWatchLogsServiceTest {
                 "/app/logs", null, null, null, "ERROR", 100, null, REGION);
         assertEquals(2, result.events().size());
         assertTrue(result.events().stream().allMatch(f -> f.event().getMessage().contains("ERROR")));
+    }
+
+    /**
+     * FilterLogEvents reads its pattern with the filter pattern syntax, not as a substring.
+     * Measured on AWS (eu-west-1, 2026-10-16) against these five events: each pattern matched
+     * exactly the events listed with it.
+     */
+    @Test
+    void filterLogEventsMatchesWithTheFilterPatternSyntax() {
+        service.createLogGroup("/app/logs", null, null, REGION);
+        service.createLogStream("/app/logs", "stream-1", REGION);
+        List<String> messages = List.of(
+                "{\"time\":\"t\",\"level\":\"INFO\",\"msg\":\"mail not sent\",\"template\":\"sign-in-code\","
+                        + "\"substitutions\":{\"code\":\"694692\"}}",
+                "{\"level\":\"ERROR\",\"msg\":\"boom\",\"template\":\"other\"}",
+                "ERROR something failed in sign-in-code path",
+                "WARN slow response",
+                "INFO all good");
+        long now = System.currentTimeMillis();
+        List<Map<String, Object>> events = new ArrayList<>();
+        for (int i = 0; i < messages.size(); i++) {
+            events.add(Map.of("timestamp", now + i, "message", messages.get(i)));
+        }
+        service.putLogEvents("/app/logs", "stream-1", events, REGION);
+
+        Map<String, List<Integer>> expected = new LinkedHashMap<>();
+        expected.put("{ $.template = \"sign-in-code\" }", List.of(0));
+        expected.put("{ $.level = \"INFO\" }", List.of(0));
+        expected.put("{ $.substitutions.code = 694692 }", List.of(0));
+        expected.put("{ $.substitutions.code = \"694692\" }", List.of(0));
+        expected.put("sign-in-code", List.of());
+        expected.put("\"sign-in-code\"", List.of(0, 2));
+        expected.put("ERROR", List.of(1, 2));
+        expected.put("error", List.of());
+        expected.put("?ERROR ?WARN", List.of(1, 2, 3));
+        expected.put("ERROR -sign", List.of(1));
+        expected.put("\"mail not sent\"", List.of(0));
+        expected.put("mail", List.of(0));
+        expected.put("{ $.missing = \"x\" }", List.of());
+        for (Map.Entry<String, List<Integer>> pattern : expected.entrySet()) {
+            List<String> matched = service.filterLogEvents("/app/logs", null, null, null, pattern.getKey(),
+                    100, null, REGION).events().stream().map(f -> f.event().getMessage()).toList();
+            assertEquals(pattern.getValue().stream().map(messages::get).toList(), matched, pattern.getKey());
+        }
+    }
+
+    @Test
+    void filterLogEventsRefusesAnInvalidPattern() {
+        service.createLogGroup("/app/logs", null, null, REGION);
+
+        AwsException json = assertThrows(AwsException.class, () -> service.filterLogEvents(
+                "/app/logs", null, null, null, "{ $.x = }", 100, null, REGION));
+        AwsException delimited = assertThrows(AwsException.class, () -> service.filterLogEvents(
+                "/app/logs", null, null, null, "[a, b", 100, null, REGION));
+
+        assertEquals("InvalidParameterException", json.getErrorCode());
+        assertEquals("InvalidParameterException", delimited.getErrorCode());
     }
 
     @Test
