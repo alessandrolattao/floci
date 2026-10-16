@@ -55,13 +55,16 @@ Log group deletion protection defaults to disabled and is persisted with the log
 enabled, `DeleteLogGroup` returns `ValidationException` until protection is explicitly disabled
 with `PutLogGroupDeletionProtection`.
 
-Two actions are currently simplified:
+One action is currently simplified:
 
 - **`GetDataProtectionPolicy`** does not model data-protection policies. It returns
   HTTP 200 with the resolved `logGroupIdentifier` and no `policyDocument`, including for
   a log group that does not exist, where real AWS returns `ResourceNotFoundException`.
-- **`FilterLogEvents`** matches `filterPattern` as a plain substring of the message. The full
-  filter pattern syntax described below is applied by metric filters and subscription filters.
+
+`FilterLogEvents` reads `filterPattern` with the filter pattern syntax described below, the one
+metric filters and subscription filters use: terms, quoted phrases, `?` alternatives, `-`
+exclusions, JSON and space-delimited patterns. An invalid pattern is refused with
+`InvalidParameterException`.
 
 ### Subscription filters {#subscription-filters}
 
@@ -233,9 +236,8 @@ When a `Complete` result set looks narrower or wider than intended, check the qu
 compound `filter` or a stray `=` first: those cases produce neither a failure nor a warning. The
 only log line is the usual INFO summary, `Logs Insights query <id>: scanned ... -> <n> row(s)`.
 
-For simple substring matching, `FilterLogEvents` is the more predictable option today. Note that
-Floci matches `--filter-pattern` as a plain substring of the message; the real filter-pattern
-syntax (`?ERROR ?WARN`, `{ $.level = "ERROR" }`, and so on) is not parsed.
+For matching events by a pattern, `FilterLogEvents` is the more predictable option today: it
+applies the filter pattern syntax (`?ERROR ?WARN`, `{ $.level = "ERROR" }`, and so on) as AWS does.
 
 ### Reading events past the limit
 
