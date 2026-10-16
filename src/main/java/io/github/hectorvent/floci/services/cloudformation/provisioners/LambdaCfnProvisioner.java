@@ -261,6 +261,9 @@ public class LambdaCfnProvisioner implements CfnResourceProvisioner {
         configRequest.put("DeadLetterConfig", resolveMapOrDefault(props, "DeadLetterConfig", engine,
                 mapWithNullValue("TargetArn")));
         configRequest.put("VpcConfig", resolveMapOrDefault(props, "VpcConfig", engine, Map.of()));
+        // Empty when the template has none, so that removing it puts the function back on its
+        // defaults (Text, or JSON for a durable function, and /aws/lambda/<name>), as on AWS.
+        configRequest.put("LoggingConfig", resolveMapOrDefault(props, "LoggingConfig", engine, Map.of()));
         configRequest.put("FileSystemConfigs",
                 resolveObjectListOrEmpty(props, "FileSystemConfigs", engine));
         putResolvedMapIfPresent(configRequest, props, "ImageConfig", "ImageConfig", engine);
@@ -573,6 +576,11 @@ public class LambdaCfnProvisioner implements CfnResourceProvisioner {
                         return true;
                     }
                 }
+                case "LoggingConfig" -> {
+                    if (loggingConfigurationChanged(fn, desired)) {
+                        return true;
+                    }
+                }
                 case "FileSystemConfigs" -> {
                     if (!Objects.equals(normalizeForCompare(fileSystemConfigs(fn)),
                             normalizeForCompare(desired))) {
@@ -599,6 +607,26 @@ public class LambdaCfnProvisioner implements CfnResourceProvisioner {
             }
         }
         return false;
+    }
+
+    /**
+     * Compares what Lambda would store for {@code desired}: an omitted LogFormat is the function's
+     * default, the two log levels count only in JSON, and an omitted LogGroup is the default one.
+     */
+    private static boolean loggingConfigurationChanged(LambdaFunction fn, Object desired) {
+        String defaultFormat = fn.isDurable() ? "JSON" : "Text";
+        String format = Objects.requireNonNullElse(blankToNull(mapString(desired, "LogFormat")), defaultFormat);
+        boolean json = "JSON".equals(format);
+        return !Objects.equals(Objects.requireNonNullElse(fn.getLogFormat(), defaultFormat), format)
+                || !Objects.equals(fn.getApplicationLogLevel(),
+                        json ? blankToNull(mapString(desired, "ApplicationLogLevel")) : null)
+                || !Objects.equals(fn.getSystemLogLevel(),
+                        json ? blankToNull(mapString(desired, "SystemLogLevel")) : null)
+                || !Objects.equals(fn.getLogGroup(), blankToNull(mapString(desired, "LogGroup")));
+    }
+
+    private static String blankToNull(String value) {
+        return value == null || value.isBlank() ? null : value;
     }
 
     private boolean imageConfigurationChanged(
