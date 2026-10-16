@@ -2,6 +2,7 @@ package io.github.hectorvent.floci.services.ecs.container;
 
 import com.github.dockerjava.api.model.Device;
 import io.github.hectorvent.floci.core.common.docker.ContainerBuilder;
+import io.github.hectorvent.floci.core.common.docker.ContainerSpec;
 import io.github.hectorvent.floci.core.common.docker.LinuxOptions;
 import io.github.hectorvent.floci.services.ecs.model.ContainerDefinition;
 import org.junit.jupiter.api.Test;
@@ -35,7 +36,6 @@ class EcsLinuxParametersTest {
                 "maxSwap", 1024,
                 "swappiness", 10), 512);
 
-        assertTrue(options.init());
         assertEquals(List.of("SYS_PTRACE"), options.capAdd());
         assertEquals(List.of("NET_RAW", "MKNOD"), options.capDrop());
         assertEquals(List.of(new Device("rw", "/dev/fuse0", "/dev/fuse")), options.devices());
@@ -78,7 +78,9 @@ class EcsLinuxParametersTest {
 
     @Test
     void initProcessDisabledOrAbsentLeavesTheDaemonDefault() {
-        assertFalse(apply(Map.of("initProcessEnabled", false), 512).init());
+        assertTrue(build(Map.of("initProcessEnabled", true), 512).init());
+        assertFalse(build(Map.of("initProcessEnabled", false), 512).init());
+        assertFalse(build(Map.of(), 512).init());
         assertEquals(LinuxOptions.NONE, apply(Map.of(), 512));
     }
 
@@ -93,10 +95,14 @@ class EcsLinuxParametersTest {
     }
 
     private static LinuxOptions apply(Map<String, Object> linuxParameters, Integer memoryLimitMb) {
+        return build(linuxParameters, memoryLimitMb).linuxOptions();
+    }
+
+    private static ContainerSpec build(Map<String, Object> linuxParameters, Integer memoryLimitMb) {
         ContainerDefinition def = new ContainerDefinition();
         def.setUnparsed(Map.of("linuxParameters", linuxParameters));
         ContainerBuilder.Builder spec = new ContainerBuilder(null, null, null).newContainer("busybox:stable");
         EcsLinuxParameters.apply(spec, def, memoryLimitMb);
-        return spec.build().linuxOptions();
+        return spec.build();
     }
 }

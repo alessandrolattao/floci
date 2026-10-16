@@ -777,7 +777,8 @@ public class ContainerBuilder {
                     readonlyRootfs,
                     List.copyOf(linkLocalIps),
                     Map.copyOf(portBindingHostIps),
-                    new LinuxOptions(init, List.copyOf(capAdd), List.copyOf(capDrop), List.copyOf(devices),
+                    init,
+                    new LinuxOptions(List.copyOf(capAdd), List.copyOf(capDrop), List.copyOf(devices),
                             shmSizeBytes, Map.copyOf(tmpfs), memorySwapBytes, memorySwappiness)
             );
         }

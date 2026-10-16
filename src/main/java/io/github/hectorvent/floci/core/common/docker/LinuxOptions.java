@@ -7,11 +7,10 @@ import java.util.Map;
 
 /**
  * The Linux process options a container is created with, as {@code docker run} names them:
- * {@code --init}, {@code --cap-add}, {@code --cap-drop}, {@code --device}, {@code --shm-size},
- * {@code --tmpfs}, {@code --memory-swap} and {@code --memory-swappiness}. {@link #NONE} leaves
- * every one of them to the daemon.
+ * {@code --cap-add}, {@code --cap-drop}, {@code --device}, {@code --shm-size}, {@code --tmpfs},
+ * {@code --memory-swap} and {@code --memory-swappiness}; {@code --init} is
+ * {@link ContainerSpec#init()}. {@link #NONE} leaves every one of them to the daemon.
  *
- * @param init whether an init process runs as PID 1, forwarding signals and reaping orphans
  * @param capAdd capabilities added to the daemon's default set, named without {@code CAP_}
  * @param capDrop capabilities dropped from the daemon's default set, named without {@code CAP_}
  * @param devices host devices exposed inside the container
@@ -23,7 +22,6 @@ import java.util.Map;
  * @param memorySwappiness swappiness from 0 to 100 (null = daemon default)
  */
 public record LinuxOptions(
-        boolean init,
         List<String> capAdd,
         List<String> capDrop,
         List<Device> devices,
@@ -33,5 +31,5 @@ public record LinuxOptions(
         Long memorySwappiness
 ) {
     public static final LinuxOptions NONE =
-            new LinuxOptions(false, List.of(), List.of(), List.of(), null, Map.of(), null, null);
+            new LinuxOptions(List.of(), List.of(), List.of(), null, Map.of(), null, null);
 }
