@@ -113,7 +113,8 @@ public final class ContainerCaBundle {
         Path bundle = FlociCertificateAuthorityProducer.tlsDir(config).resolve(FILE_NAME);
         if (!Files.isReadable(bundle)) {
             if (MISSING_BUNDLE_WARNED.compareAndSet(false, true)) {
-                LOG.warnv("TLS is enabled but {0} is missing; containers launched now will not trust Floci HTTPS", bundle);
+                LOG.warnv("TLS is enabled but {0} is missing; containers launched now will not trust Floci HTTPS,"
+                        + " and JWT authorizers will refuse an issuer Floci serves", bundle);
             } else {
                 LOG.debugv("Container CA bundle {0} still missing", bundle);
             }
@@ -181,6 +182,13 @@ public final class ContainerCaBundle {
      *                              trust nothing, public endpoints included
      */
     public static SSLContext sslContext(Path bundle) throws IOException, GeneralSecurityException {
+        SSLContext context = SSLContext.getInstance("TLS");
+        context.init(null, trustManagers(bundle), null);
+        return context;
+    }
+
+    /** The trust managers of {@link #sslContext(Path)}, over exactly the certificates in {@code bundle}. */
+    static TrustManager[] trustManagers(Path bundle) throws IOException, GeneralSecurityException {
         List<X509Certificate> certificates = parseCertificates(Files.readString(bundle));
         if (certificates.isEmpty()) {
             throw new CertificateException(bundle + " holds no certificate");
@@ -192,9 +200,7 @@ public final class ContainerCaBundle {
         }
         TrustManagerFactory factory = TrustManagerFactory.getInstance(TrustManagerFactory.getDefaultAlgorithm());
         factory.init(trustStore);
-        SSLContext context = SSLContext.getInstance("TLS");
-        context.init(null, factory.getTrustManagers(), null);
-        return context;
+        return factory.getTrustManagers();
     }
 
     /** Every trust anchor the running JVM accepts by default. */
