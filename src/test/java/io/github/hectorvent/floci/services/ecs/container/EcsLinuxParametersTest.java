@@ -69,11 +69,11 @@ class EcsLinuxParametersTest {
     }
 
     @Test
-    void maxSwapIsNotAppliedToAContainerWithNoMemoryLimit() {
+    void maxSwapIsNotAppliedToAContainerWithNoMemoryLimitButItsSwappinessIs() {
         LinuxOptions options = apply(Map.of("maxSwap", 256, "swappiness", 10), null);
 
         assertNull(options.memorySwapBytes());
-        assertNull(options.memorySwappiness());
+        assertEquals(10L, options.memorySwappiness());
     }
 
     @Test

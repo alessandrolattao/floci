@@ -219,6 +219,55 @@ class EcsFargateEdgeCaseIntegrationTest {
                         equalTo("When a container has a swap memory, it must also specify a swappiness value."));
     }
 
+    /** Measured on RegisterTaskDefinition (eu-west-1, 2026-10-16), each with AWS's message. */
+    @Test
+    void devicesTmpfsSharedMemoryAndSwapAreChecked() {
+        String body = "{\"family\":\"edge-linux-values-%s\",\"requiresCompatibilities\":[\"EC2\"],"
+                + "\"networkMode\":\"bridge\",\"memory\":\"512\",\"containerDefinitions\":"
+                + "[{\"name\":\"app\",\"image\":\"nginx:latest\",\"linuxParameters\":%s}]}";
+        String[][] refused = {
+                {"nohost", "{\"devices\":[{\"containerPath\":\"/dev/x\"}]}", "Device cannot have empty hostPath"},
+                {"perm", "{\"devices\":[{\"hostPath\":\"/dev/null\",\"permissions\":[\"READ\"]}]}",
+                        "Invalid permission: READ for device /dev/null"},
+                {"nopath", "{\"tmpfs\":[{\"size\":64}]}", "All tmpfs mounts must have a specified containerPath value."},
+                {"nosize", "{\"tmpfs\":[{\"containerPath\":\"/t\"}]}",
+                        "The container has an invalid tmpfs size value specified. It must be a non-zero, non-negative integer."},
+                {"zerosize", "{\"tmpfs\":[{\"containerPath\":\"/t\",\"size\":0}]}",
+                        "The container has an invalid tmpfs size value specified. It must be a non-zero, non-negative integer."},
+                {"option", "{\"tmpfs\":[{\"containerPath\":\"/t\",\"size\":64,\"mountOptions\":[\"NOEXEC\"]}]}",
+                        "The NOEXEC tmpfs mount option specified is invalid."},
+                {"shm", "{\"sharedMemorySize\":0}",
+                        "The container has an invalid shared memory volume size. It must be a non-zero, non-negative integer."},
+                {"negswap", "{\"maxSwap\":-1,\"swappiness\":150}",
+                        "The container has an invalid swap memory size. It must be non-negative integer."},
+                {"swappiness", "{\"maxSwap\":1024,\"swappiness\":150}",
+                        "The container has an invalid swappiness value. It must be between 0 and 100."},
+                {"order", "{\"tmpfs\":[{\"containerPath\":\"/t\",\"size\":0}],\"devices\":[{\"containerPath\":\"/x\"}]}",
+                        "Device cannot have empty hostPath"},
+        };
+        for (String[] c : refused) {
+            call("RegisterTaskDefinition", body.formatted(c[0], c[1]), 400).then().body("message", equalTo(c[2]));
+        }
+
+        call("RegisterTaskDefinition", body.formatted("ok", "{\"tmpfs\":[{\"containerPath\":\"/t\",\"size\":64,"
+                + "\"mountOptions\":[\"mode=1777\",\"noexec\"]}],\"maxSwap\":0,\"swappiness\":0}"), 200);
+    }
+
+    /** Measured: a swappiness without maxSwap is dropped, and capabilities get both lists. */
+    @Test
+    void theStoredLinuxParametersAreTheOnesAwsKeeps() {
+        String body = "{\"family\":\"edge-linux-stored\",\"requiresCompatibilities\":[\"EC2\"],"
+                + "\"networkMode\":\"bridge\",\"memory\":\"512\",\"containerDefinitions\":"
+                + "[{\"name\":\"app\",\"image\":\"nginx:latest\",\"linuxParameters\":"
+                + "{\"swappiness\":10,\"sharedMemorySize\":64,\"capabilities\":{\"drop\":[\"NET_RAW\"]}}}]}";
+
+        call("RegisterTaskDefinition", body, 200).then()
+                .body("taskDefinition.containerDefinitions[0].linuxParameters.swappiness", nullValue())
+                .body("taskDefinition.containerDefinitions[0].linuxParameters.sharedMemorySize", equalTo(64))
+                .body("taskDefinition.containerDefinitions[0].linuxParameters.capabilities.add", hasSize(0))
+                .body("taskDefinition.containerDefinitions[0].linuxParameters.capabilities.drop[0]", equalTo("NET_RAW"));
+    }
+
     @Test
     void pidModeTaskIsTheOnlyOneFargateAccepts() {
         String body = "{\"family\":\"edge-pidmode-%s\",\"requiresCompatibilities\":[\"FARGATE\"],"

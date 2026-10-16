@@ -62,8 +62,8 @@ class EcsFargateTaskDefinitionIntegrationTest {
 
     @Test
     void registerTaskDefinitionRoundTripsMembersFlociDoesNotActOn() {
-        // proxyConfiguration and the container's ulimits, linuxParameters and resourceRequirements
-        // have no local behaviour, but a client that wrote them reads them back or sees drift.
+        // proxyConfiguration and the container's ulimits and resourceRequirements have no local
+        // behaviour, but a client that wrote them, or linuxParameters, reads them back or sees drift.
         register("{\"family\":\"fargate-passthrough\",\"requiresCompatibilities\":[\"FARGATE\"],"
                 + "\"networkMode\":\"awsvpc\",\"cpu\":\"512\",\"memory\":\"1024\","
                 + "\"proxyConfiguration\":{\"type\":\"APPMESH\",\"containerName\":\"envoy\","

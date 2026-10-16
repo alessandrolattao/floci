@@ -132,9 +132,10 @@ it names no `containerPath`; `sharedMemorySize` sizes `/dev/shm` in MiB (`--shm-
 `tmpfs` is mounted at its `containerPath` with its `mountOptions` and `size` in MiB (`--tmpfs`);
 `maxSwap` caps memory plus swap at the container's hard limit plus that many MiB (`--memory-swap`,
 so `0` means no swap), and `swappiness` (`--memory-swappiness`) goes with it: as on ECS,
-`RegisterTaskDefinition` refuses a `maxSwap` without a `swappiness`, and a `swappiness` without
-`maxSwap` is ignored. A container with no hard limit, neither its own `memory` nor the task's, gets
-no swap limit, because Docker cannot limit swap without one. A daemon on cgroup v2 discards
+`RegisterTaskDefinition` refuses a `maxSwap` without a `swappiness`, and drops a `swappiness`
+without `maxSwap` from the definition it stores. A container with no hard limit, neither its own
+`memory` nor the task's, gets no swap limit, because Docker cannot limit swap without one, but
+still its `swappiness`. A daemon on cgroup v2 discards
 `swappiness`, as Amazon Linux 2023 does. Inside a task behind a security group, `NET_ADMIN` and
 `NET_RAW` stay dropped whatever `capabilities` adds, because the group is enforced in the network
 namespace the task's containers share.
@@ -234,10 +235,14 @@ at registration:
   entry other than `SYS_PTRACE` as written (`sys_ptrace` is refused by name), a `pidMode` other
   than `task`, or a host volume with a `sourcePath`. All of them are accepted on an EC2-compatible
   definition. The `linuxParameters` among them are checked in that order, with AWS's messages.
-- Whatever the launch type: `linuxParameters.maxSwap` only with a `swappiness`, and every
-  `capabilities` entry one of the names the KernelCapabilities reference lists, in any case and
-  without a `CAP_` prefix (`Unrecognized Linux capabilities in add: [CAP_NET_ADMIN]`). These come
-  before the Fargate rules.
+- Whatever the launch type, in this order and with AWS's messages: every `capabilities` entry one
+  of the names the KernelCapabilities reference lists, in any case and without a `CAP_` prefix
+  (`Unrecognized Linux capabilities in add: [CAP_NET_ADMIN]`); every device with a `hostPath`, and
+  only `read`, `write` and `mknod` as `permissions`, as written; every `tmpfs` mount with a
+  `containerPath`, a `size` above zero and `mountOptions` the Tmpfs reference lists, as written and
+  with any `=value`; a `sharedMemorySize` above zero; and a `maxSwap` only with a `swappiness`, of
+  zero or more, with a `swappiness` from 0 to 100. These come before the Fargate rules. The stored
+  `capabilities` always carry both an `add` and a `drop` list, as on AWS.
 - A `dependsOn` graph that names only containers of the same task definition and has no cycle.
 
 A launched Fargate task reports what AWS reports: `platformVersion` (with `LATEST` resolved to a

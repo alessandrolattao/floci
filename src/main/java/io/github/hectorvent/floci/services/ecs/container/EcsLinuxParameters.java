@@ -13,9 +13,9 @@ import java.util.Map;
  * {@code --cap-add} and {@code --cap-drop}, {@code devices} are {@code --device} (read, write and
  * mknod when no permissions are given), {@code sharedMemorySize} is {@code --shm-size} in MiB,
  * each {@code tmpfs} entry is a {@code --tmpfs} of its size in MiB with its mount options,
- * {@code maxSwap} is {@code --memory-swap} as the container's memory plus that many MiB, and
- * {@code swappiness} is {@code --memory-swappiness}, which registration requires with
- * {@code maxSwap}, as ECS does, and which is ignored without it.
+ * {@code maxSwap} is {@code --memory-swap} as the container's memory plus that many MiB (a
+ * container with only a soft limit gets none), and {@code swappiness} is {@code --memory-swappiness},
+ * which registration requires with {@code maxSwap} and drops without it, as ECS does.
  *
  * <p>RegisterTaskDefinition keeps the members verbatim among the definition's unparsed members,
  * which is where they are read from, whether the definition came from the API or a template.
@@ -67,8 +67,11 @@ final class EcsLinuxParameters {
             }
         }
         Long maxSwap = number(parameters.get("maxSwap"));
-        if (maxSwap != null && memoryLimitMb != null) {
-            spec.withMemorySwapBytes((memoryLimitMb + maxSwap) * MIB);
+        if (maxSwap != null) {
+            if (memoryLimitMb != null) {
+                spec.withMemorySwapBytes((memoryLimitMb + maxSwap) * MIB);
+            }
+            // Docker takes a swappiness without a swap limit; registration keeps one only with maxSwap.
             Long swappiness = number(parameters.get("swappiness"));
             if (swappiness != null) {
                 spec.withMemorySwappiness(swappiness);
