@@ -735,6 +735,7 @@ public interface EmulatorConfig {
         RdsServiceConfig rds();
         RedshiftServiceConfig redshift();
         RdsDataServiceConfig rdsData();
+        DsqlServiceConfig dsql();
         RedshiftDataServiceConfig redshiftData();
         RedshiftServerlessServiceConfig redshiftServerless();
         EventBridgeServiceConfig eventbridge();
@@ -1730,6 +1731,38 @@ public interface EmulatorConfig {
          *  Env: FLOCI_SERVICES_RDS_AURORA_RESUME_DELAY_MILLIS */
         @WithDefault("0")
         int auroraResumeDelayMillis();
+    }
+
+    interface DsqlServiceConfig {
+        @WithDefault("true")
+        boolean enabled();
+
+        /** When true, clusters have no database and are ACTIVE at once, without Docker. */
+        @WithDefault("false")
+        boolean mock();
+
+        /**
+         * Port every cluster endpoint is served on, as on AWS, where a DSQL endpoint is always
+         * reached on 5432. Clients connect to {@code <id>.dsql.<region>.<endpoint-suffix>} with TLS,
+         * and the server name they send picks the cluster.
+         */
+        @WithDefault("5432")
+        int port();
+
+        /**
+         * Domain under which cluster endpoints are named, {@code <id>.dsql.<region>.<suffix>}. The
+         * default resolves to the loopback address on the host and to Floci inside its Docker
+         * network, so an endpoint works unchanged in both.
+         */
+        @WithDefault("localhost.floci.io")
+        String endpointSuffix();
+
+        /** PostgreSQL image each cluster's database runs in. DSQL is PostgreSQL 16 compatible. */
+        @WithDefault("postgres:16-alpine")
+        String image();
+
+        /** Docker network for the database containers. Defaults to Floci's own network. */
+        Optional<String> dockerNetwork();
     }
 
     interface RdsDataServiceConfig {

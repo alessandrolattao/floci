@@ -41,7 +41,7 @@ class PartitionCrossServiceSmokeIntegrationTest {
             "accessanalyzer", "acm", "amazonmq", "apigateway", "apigatewayv2", "applicationautoscaling", "appsync",
             "aps", "autoscaling", "backup", "batch", "bcmdataexports", "bedrock", "bedrockagentcorecontrol", "ce",
             "cloudfront", "cloudmap", "cloudwatch", "codebuild", "codedeploy", "codepipeline", "cognito",
-            "configservice", "connect", "controlcatalog", "controltower", "datasync", "dlm", "dms", "dynamodb", "ec2",
+            "configservice", "connect", "controlcatalog", "controltower", "datasync", "dlm", "dms", "dsql", "dynamodb", "ec2",
             "ecr", "ecs", "efs", "eks", "elasticache", "elasticbeanstalk", "elbv2", "emr", "emrserverless",
             "eventbridge", "firehose", "fis", "glue", "guardduty", "iot", "kinesis", "kinesisanalytics", "lambda",
             "lambdamicrovms", "lambdaweb", "memorydb", "msk", "mwaa", "networkfirewall", "oam", "opensearch", "organizations",
@@ -498,6 +498,19 @@ class PartitionCrossServiceSmokeIntegrationTest {
         String issuer = signed(region, "eks").when().get("/clusters/" + name).then().statusCode(200)
             .extract().jsonPath().getString("cluster.identity.oidc.issuer");
         assertRegionalHostIn(partitionCase, URI.create(issuer).getHost());
+    }
+
+    @ParameterizedTest
+    @MethodSource(PartitionMatrix.NON_COMMERCIAL_CASES)
+    void dsqlClusterArn(PartitionCase partitionCase) {
+        String region = offered(partitionCase, "dsql");
+        Response created = signed(region, "dsql")
+            .contentType(JSON)
+            .body("{\"deletionProtectionEnabled\":false}")
+        .when().post("/cluster").then().statusCode(200).extract().response();
+        String identifier = created.jsonPath().getString("identifier");
+        cleanup.register(() -> signed(region, "dsql").when().delete("/cluster/" + identifier));
+        PartitionMatrix.assertArnIn(partitionCase, created.jsonPath().getString("arn"));
     }
 
     @ParameterizedTest
