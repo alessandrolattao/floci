@@ -9,6 +9,7 @@ import com.amazonaws.encryptionsdk.MasterKey;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import io.github.hectorvent.floci.config.TlsCertificateManager;
+import io.github.hectorvent.floci.core.common.AwsException;
 import io.github.hectorvent.floci.core.common.RegionResolver;
 import io.github.hectorvent.floci.core.storage.InMemoryStorage;
 import io.github.hectorvent.floci.services.acm.AcmService;
@@ -39,6 +40,7 @@ import java.util.Map;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyString;
@@ -226,6 +228,113 @@ class CognitoCustomEmailSenderTest {
         assertEquals("fay2@example.com", update.path("request").path("userAttributes").path("email").asText());
         assertEquals("false", update.path("request").path("userAttributes").path("email_verified").asText());
         verifyNoInteractions(ses);
+    }
+
+    /** Measured: a sender needs a KMSKeyID, on CreateUserPool and on UpdateUserPool alike. */
+    @Test
+    void aPoolWithASenderNeedsAKey() {
+        Map<String, Object> senderOnly = Map.of(
+                "CustomEmailSender", Map.of("LambdaArn", SENDER_ARN, "LambdaVersion", "V1_0"));
+        AwsException created = assertThrows(AwsException.class, () -> service.createUserPool(
+                new HashMap<>(Map.of("PoolName", "no-key", "LambdaConfig", senderOnly)), REGION));
+        assertEquals("InvalidParameterException", created.getErrorCode());
+        assertEquals("KMSKeyId parameter is required when Custom SMS/Email Lambda trigger is used.",
+                created.getMessage());
+        AwsException updated = assertThrows(AwsException.class, () -> service.updateUserPool(
+                new HashMap<>(Map.of("UserPoolId", pool.getId(), "LambdaConfig", senderOnly)), REGION));
+        assertEquals("InvalidParameterException", updated.getErrorCode());
+    }
+
+    /**
+     * Measured: naming a key grants Cognito Encrypt and GenerateDataKey on it under the pool's id,
+     * and a key the grant cannot be created on refuses the pool.
+     */
+    @Test
+    void namingAKeyGrantsCognitoItsUse() {
+        @SuppressWarnings("unchecked")
+        List<Map<String, Object>> grants = (List<Map<String, Object>>) kmsService
+                .listGrants(keyArn, REGION, null, null, null, null).get("Grants");
+        assertEquals(1, grants.size());
+        Map<String, Object> grant = grants.get(0);
+        assertEquals("cognito-encrypt-grant", grant.get("Name"));
+        assertEquals("cognito-idp.us-east-1.amazonaws.com", grant.get("GranteePrincipal"));
+        assertEquals("cognito-idp.us-east-1.amazonaws.com", grant.get("RetiringPrincipal"));
+        assertEquals(List.of("Encrypt", "GenerateDataKey"), grant.get("Operations"));
+        assertEquals(Map.of("EncryptionContextSubset", Map.of("userpool-id", pool.getId())), grant.get("Constraints"));
+
+        String missing = "arn:aws:kms:us-east-1:000000000000:key/00000000-0000-0000-0000-000000000000";
+        AwsException refused = assertThrows(AwsException.class, () -> service.createUserPool(new HashMap<>(Map.of(
+                "PoolName", "missing-key", "LambdaConfig", Map.of(
+                        "CustomEmailSender", Map.of("LambdaArn", SENDER_ARN, "LambdaVersion", "V1_0"),
+                        "KMSKeyID", missing))), REGION));
+        assertEquals("InvalidParameterException", refused.getErrorCode());
+        assertEquals("Encountered error when CreateGrant was attempted on the input KMS key - Key '" + missing
+                + "' does not exist", refused.getMessage());
+    }
+
+    /**
+     * Measured: a disabled key fails each request that sends a code with CodeDeliveryFailureException,
+     * a sign-in included, while the sign-up it was part of keeps its user.
+     */
+    @Test
+    void aDisabledKeyFailsTheRequestButKeepsTheSignUp() {
+        service.adminCreateUser(pool.getId(), "gil@example.com",
+                Map.of("email", "gil@example.com", "email_verified", "true"), null, "SUPPRESS");
+        kmsService.disableKey(keyArn, REGION);
+
+        AwsException signUp = assertThrows(AwsException.class, () -> service.signUp(clientId, "hal@example.com",
+                "Probe-Passw0rd!x", Map.of("email", "hal@example.com")));
+        assertEquals("CodeDeliveryFailureException", signUp.getErrorCode());
+        assertEquals("Caller needs to enable the configured KMS Key", signUp.getMessage());
+        assertEquals("UNCONFIRMED", service.adminGetUser(pool.getId(), "hal@example.com").getUserStatus());
+
+        AwsException signIn = assertThrows(AwsException.class, () -> service.initiateAuth(clientId, "USER_AUTH",
+                Map.of("USERNAME", "gil@example.com", "PREFERRED_CHALLENGE", "EMAIL_OTP")));
+        assertEquals("CodeDeliveryFailureException", signIn.getErrorCode());
+        AwsException forgot = assertThrows(AwsException.class, () -> service.forgotPassword(clientId, "gil@example.com"));
+        assertEquals("Caller needs to enable the configured KMS Key", forgot.getMessage());
+    }
+
+    /** Measured: a key pending deletion fails the request with the encryption as the reason. */
+    @Test
+    void aKeyPendingDeletionFailsTheRequest() {
+        kmsService.scheduleKeyDeletion(keyArn, 7, REGION);
+
+        AwsException signUp = assertThrows(AwsException.class, () -> service.signUp(clientId, "ida@example.com",
+                "Probe-Passw0rd!x", Map.of("email", "ida@example.com")));
+        assertEquals("CodeDeliveryFailureException", signUp.getErrorCode());
+        assertEquals("Unable to encrypt CustomEmailSender/CustomSMSSender code using the configured KMS Key",
+                signUp.getMessage());
+    }
+
+    /** Measured: a function Cognito cannot invoke, a deleted one included, fails as AccessDenied. */
+    @Test
+    void aFunctionThatIsGoneFailsTheRequest() {
+        when(lambdaService.invoke(anyString(), anyString(), any(byte[].class), eq(InvocationType.Event)))
+                .thenThrow(new AwsException("ResourceNotFoundException", "Function not found: " + SENDER_ARN, 404));
+
+        AwsException signUp = assertThrows(AwsException.class, () -> service.signUp(clientId, "jon@example.com",
+                "Probe-Passw0rd!x", Map.of("email", "jon@example.com")));
+        assertEquals("UnexpectedLambdaException", signUp.getErrorCode());
+        assertEquals("CustomEmailSender invocation failed due to error AccessDeniedException.", signUp.getMessage());
+    }
+
+    /** Measured: an email change whose code cannot be sent is applied, and the request fails. */
+    @Test
+    void anAttributeUpdateIsAppliedWhenItsCodeCannotBeSent() throws Exception {
+        service.signUp(clientId, "kim@example.com", "Probe-Passw0rd!x", Map.of("email", "kim@example.com"));
+        service.confirmSignUp(clientId, "kim@example.com", open(lastEvent().path("request").path("code").asText()));
+        @SuppressWarnings("unchecked")
+        Map<String, Object> tokens = (Map<String, Object>) service.initiateAuth(clientId, "USER_PASSWORD_AUTH",
+                Map.of("USERNAME", "kim@example.com", "PASSWORD", "Probe-Passw0rd!x")).get("AuthenticationResult");
+        kmsService.disableKey(keyArn, REGION);
+
+        AwsException update = assertThrows(AwsException.class, () -> service.updateUserAttributes(
+                (String) tokens.get("AccessToken"), new HashMap<>(Map.of("email", "kim2@example.com"))));
+        assertEquals("CodeDeliveryFailureException", update.getErrorCode());
+        CognitoUser user = service.adminGetUser(pool.getId(), "kim2@example.com");
+        assertEquals("kim2@example.com", user.getAttributes().get("email"));
+        assertEquals("false", user.getAttributes().get("email_verified"));
     }
 
     private JsonNode lastEvent() throws Exception {

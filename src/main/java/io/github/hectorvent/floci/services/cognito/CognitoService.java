@@ -47,6 +47,7 @@ import io.github.hectorvent.floci.services.cognito.model.WebAuthnConfiguration;
 import io.github.hectorvent.floci.services.cognito.model.WebAuthnCredential;
 import io.github.hectorvent.floci.services.cognito.verification.CognitoCustomEmailSender;
 import io.github.hectorvent.floci.services.cognito.verification.CognitoMessageDispatcher;
+import io.github.hectorvent.floci.services.cognito.verification.CustomEmailSenderException;
 import io.github.hectorvent.floci.services.cognito.verification.VerificationCode;
 import io.github.hectorvent.floci.services.cognito.verification.VerificationCodeException;
 import io.github.hectorvent.floci.services.cognito.verification.VerificationCodeService;
@@ -427,6 +428,10 @@ public class CognitoService implements ResourceProvider {
         pool.setClientIdOverride(getClientIdOverride(userPoolTags));
         pool.setClientSecretOverride(ReservedTags.extractOverrideCognitoClientSecret(userPoolTags));
         populateUserPool(pool, request);
+        CognitoCustomEmailSender.requireKeyForSenders(pool.getLambdaConfig());
+        if (customEmailSender != null) {
+            customEmailSender.grantKeyUse(pool);
+        }
 
         ensureJwtSigningKeys(pool);
         ensureRefreshTokenSecret(pool);
@@ -453,11 +458,23 @@ public class CognitoService implements ResourceProvider {
         if (request.get("PoolName") instanceof String poolName && !poolName.isBlank()) {
             updatedPool.setName(poolName);
         }
+        if (request.containsKey("LambdaConfig")) {
+            CognitoCustomEmailSender.requireKeyForSenders(updatedPool.getLambdaConfig());
+            // A key the pool already names keeps its grant: AWS accepts it unchanged even once it
+            // is pending deletion, when no grant can be created on it.
+            if (customEmailSender != null && !Objects.equals(kmsKeyId(pool), kmsKeyId(updatedPool))) {
+                customEmailSender.grantKeyUse(updatedPool);
+            }
+        }
 
         updatedPool.setLastModifiedDate(System.currentTimeMillis() / 1000L);
         poolStore.put(id, updatedPool);
         LOG.infov("Updated User Pool: {0}", id);
         return updatedPool;
+    }
+
+    private static Object kmsKeyId(UserPool pool) {
+        return pool.getLambdaConfig() == null ? null : pool.getLambdaConfig().get("KMSKeyID");
     }
 
     /**
@@ -3439,6 +3456,12 @@ public class CognitoService implements ResourceProvider {
             } catch (VerificationCodeException e) {
                 rollbackSignUpConfirmationArtifacts(user);
                 throw mapVerificationCodeException(e);
+            } catch (CustomEmailSenderException e) {
+                // AWS keeps the user it signed up and fails the request with the sender's error;
+                // ResendConfirmationCode then sends a code the sender can take.
+                verificationCodeService.invalidatePrevious(pool.getId(), user.getUsername(),
+                        VerificationCode.Purpose.SIGNUP_CONFIRMATION);
+                throw e;
             } catch (RuntimeException e) {
                 rollbackSignUpConfirmationArtifacts(user);
                 throw new AwsException("CodeDeliveryFailureException",
@@ -3569,6 +3592,9 @@ public class CognitoService implements ResourceProvider {
         } catch (RuntimeException e) {
             verificationCodeService.invalidatePrevious(pool.getId(), user.getUsername(),
                     VerificationCode.Purpose.SIGNUP_CONFIRMATION);
+            if (e instanceof CustomEmailSenderException senderFailure) {
+                throw senderFailure;
+            }
             throw new AwsException("CodeDeliveryFailureException",
                     "Failed to deliver the message.", 400);
         }
@@ -3968,6 +3994,11 @@ public class CognitoService implements ResourceProvider {
                     CognitoCustomEmailSender.Source.FORGOT_PASSWORD, client.getClientId());
         } catch (VerificationCodeException e) {
             throw mapVerificationCodeException(e);
+        } catch (CustomEmailSenderException e) {
+            // The code never reached the user, so it cannot reset the password.
+            verificationCodeService.invalidatePrevious(pool.getId(), user.getUsername(),
+                    VerificationCode.Purpose.PASSWORD_RESET);
+            throw e;
         }
 
         Map<String, Object> response = new LinkedHashMap<>();
@@ -4094,6 +4125,9 @@ public class CognitoService implements ResourceProvider {
                     CognitoCustomEmailSender.Source.VERIFY_USER_ATTRIBUTE, clientId);
         } catch (VerificationCodeException e) {
             throw mapVerificationCodeException(e);
+        } catch (CustomEmailSenderException e) {
+            verificationCodeService.invalidatePrevious(poolId, user.getUsername(), purpose);
+            throw e;
         }
 
         Map<String, Object> response = new LinkedHashMap<>();
@@ -4201,6 +4235,9 @@ public class CognitoService implements ResourceProvider {
 
         CognitoUser updatedUser = MAPPER.convertValue(currentUser, CognitoUser.class);
         List<Map<String, Object>> deliveryDetails = new ArrayList<>();
+        // AWS applies the update when the Custom Email Sender cannot take the code, and fails the
+        // request with the sender's error afterwards (measured).
+        CustomEmailSenderException senderFailure = null;
 
         try {
             for (Map.Entry<String, String> attribute : attributes.entrySet()) {
@@ -4225,8 +4262,13 @@ public class CognitoService implements ResourceProvider {
                 ensureVerificationWiring();
                 String verificationCode = verificationCodeService.issue(
                         poolId, currentUser.getUsername(), purpose, Duration.ofHours(24));
-                dispatchAttributeVerificationCode(pool, currentUser, attributeName, value,
-                        purpose, verificationCode, CognitoCustomEmailSender.Source.UPDATE_USER_ATTRIBUTE, clientId);
+                try {
+                    dispatchAttributeVerificationCode(pool, currentUser, attributeName, value, purpose,
+                            verificationCode, CognitoCustomEmailSender.Source.UPDATE_USER_ATTRIBUTE, clientId);
+                } catch (CustomEmailSenderException e) {
+                    verificationCodeService.invalidatePrevious(poolId, currentUser.getUsername(), purpose);
+                    senderFailure = senderFailure == null ? e : senderFailure;
+                }
 
                 if (requiresVerificationBeforeUpdate(pool, attributeName)) {
                     updatedUser.getPendingAttributes().put(attributeName, value);
@@ -4253,6 +4295,9 @@ public class CognitoService implements ResourceProvider {
 
         updatedUser.setLastModifiedDate(System.currentTimeMillis() / 1000L);
         userStore.put(userKey(poolId, updatedUser.getUsername()), updatedUser);
+        if (senderFailure != null) {
+            throw senderFailure;
+        }
         return deliveryDetails;
     }
 
@@ -6142,6 +6187,11 @@ public class CognitoService implements ResourceProvider {
             // the rate limiter doesn't block an immediate retry for a code the user never
             // received, matching how signUp's rollback treats the same failure shape.
             verificationCodeService.invalidatePrevious(pool.getId(), user.getUsername(), purpose);
+            // A Custom Email Sender's own failure is the one AWS answers, although none of the
+            // four operations declares it (measured: CodeDeliveryFailureException).
+            if (e instanceof CustomEmailSenderException senderFailure) {
+                throw senderFailure;
+            }
             LOG.warnv(e, "Failed to deliver a USER_AUTH {0} code for pool {1}: {2}",
                     purpose, pool.getId(), e.getMessage());
             // Unlike SignUp/ResendConfirmationCode/ForgotPassword, none of InitiateAuth,

@@ -27,6 +27,18 @@ invoked asynchronously, so the request neither waits for it nor fails with it. I
 code for a user created without one, and names the user as the request did, with `clientId`
 `CLIENT_ID_NOT_APPLICABLE`. SMS still goes through SNS.
 
+As on AWS, a pool that names a sender must name its `KMSKeyID` (`InvalidParameterException`
+`KMSKeyId parameter is required when Custom SMS/Email Lambda trigger is used.`), and naming a key
+grants Cognito its use: the grant `cognito-encrypt-grant`, to and retirable by
+`cognito-idp.<region>.amazonaws.com`, for `Encrypt` and `GenerateDataKey` under the pool's
+`userpool-id`. A key the grant cannot be created on refuses the pool with the KMS error as the
+reason. When the sender cannot take a message, the request that asked for it fails while what it
+did besides stays done (a sign-up keeps its user, an attribute update its new value):
+`CodeDeliveryFailureException` `Caller needs to enable the configured KMS Key` for a disabled key,
+`Unable to encrypt CustomEmailSender/CustomSMSSender code using the configured KMS Key` for one in
+any other unusable state, and `UnexpectedLambdaException` `CustomEmailSender invocation failed due to
+error AccessDeniedException.` for a function that is gone.
+
 `CreateUserPool` supports overriding several values using user-pool tags **only** at creation time:
 * `floci:override-id`, to pin the resulting `UserPool.Id`. Because a pinned id is caller-chosen it can be reused, which AWS never does. `DeleteUserPool` therefore deletes everything the pool owns (users, groups, app clients, resource servers, revoked token records and outstanding verification codes) so a pool recreated on the same id starts empty rather than inheriting the deleted pool's password hashes and client secrets.
 * `floci:override-cognito-client-id`
