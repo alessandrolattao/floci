@@ -10,7 +10,9 @@ import io.github.hectorvent.floci.core.common.Resettable;
 import io.github.hectorvent.floci.core.storage.AccountAwareStorageBackend;
 import io.github.hectorvent.floci.core.storage.StorageFactory;
 import io.github.hectorvent.floci.services.dsql.model.DsqlCluster;
+import io.quarkus.runtime.StartupEvent;
 import jakarta.enterprise.context.ApplicationScoped;
+import jakarta.enterprise.event.Observes;
 import jakarta.inject.Inject;
 import org.jboss.logging.Logger;
 
@@ -20,7 +22,6 @@ import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.LinkedHashMap;
 import java.util.List;
-import java.util.Locale;
 import java.util.Map;
 import java.util.Optional;
 import java.util.concurrent.ConcurrentHashMap;
@@ -48,21 +49,23 @@ public class DsqlService implements Resettable {
     private final RegionResolver regionResolver;
     private final String endpointSuffix;
     private final DsqlDataPlane dataPlane;
+    private final boolean enabled;
     private final Map<String, Object> locks = new ConcurrentHashMap<>();
 
     @Inject
     public DsqlService(StorageFactory storageFactory, EmulatorConfig config, RegionResolver regionResolver,
                        DsqlDataPlane dataPlane) {
         this(storageFactory.create("dsql", "dsql-clusters.json", new TypeReference<>() {}), regionResolver,
-                config.services().dsql().endpointSuffix(), dataPlane);
+                config.services().dsql().endpointSuffix(), dataPlane, config.services().dsql().enabled());
     }
 
     DsqlService(AccountAwareStorageBackend<DsqlCluster> clusters, RegionResolver regionResolver,
-                String endpointSuffix, DsqlDataPlane dataPlane) {
+                String endpointSuffix, DsqlDataPlane dataPlane, boolean enabled) {
         this.clusters = clusters;
         this.regionResolver = regionResolver;
         this.endpointSuffix = endpointSuffix;
         this.dataPlane = dataPlane;
+        this.enabled = enabled;
     }
 
     // ── Clusters ──────────────────────────────────────────────────────────────
@@ -184,22 +187,6 @@ public class DsqlService implements Resettable {
         return cluster;
     }
 
-    /** The cluster whose endpoint is {@code host}, in any account: what the data plane serves. */
-    public Optional<DsqlCluster> clusterForEndpoint(String host) {
-        if (host == null) {
-            return Optional.empty();
-        }
-        String wanted = host.toLowerCase(Locale.ROOT);
-        return clusters.scanAllAccounts().stream()
-                .filter(cluster -> wanted.equals(cluster.getEndpoint()))
-                .findFirst();
-    }
-
-    /** Every cluster in every account, for the data plane to bring back after a restart. */
-    public List<DsqlCluster> allClusters() {
-        return clusters.scanAllAccounts();
-    }
-
     // ── VPC endpoint service ──────────────────────────────────────────────────
 
     public String vpcEndpointServiceName(String region, String identifier) {
@@ -265,6 +252,26 @@ public class DsqlService implements Resettable {
         synchronized (lockFor(cluster.getArn())) {
             (tagKeys == null ? List.<String>of() : tagKeys).forEach(cluster.getTags()::remove);
             clusters.put(key(cluster.getRegion(), cluster.getIdentifier()), cluster);
+        }
+    }
+
+    /**
+     * Brings every cluster's database back when Floci starts with clusters in its storage, and
+     * finishes a deletion that a stop interrupted.
+     */
+    void onStart(@Observes StartupEvent ignored) {
+        if (!enabled) {
+            return;
+        }
+        for (DsqlCluster cluster : clusters.scanAllAccounts()) {
+            String accountId = cluster.getAccountId();
+            String region = cluster.getRegion();
+            String identifier = cluster.getIdentifier();
+            if (DELETING.equals(cluster.getStatus())) {
+                dataPlane.deprovision(cluster, () -> clusters.deleteForAccount(accountId, key(region, identifier)));
+            } else if (!FAILED.equals(cluster.getStatus())) {
+                dataPlane.provision(cluster, ready -> markReady(accountId, region, identifier, ready));
+            }
         }
     }
 
