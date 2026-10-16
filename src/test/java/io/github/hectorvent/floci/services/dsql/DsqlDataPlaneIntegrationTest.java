@@ -245,6 +245,31 @@ class DsqlDataPlaneIntegrationTest {
     }
 
     @Test
+    void aForeignKeyIsEnforcedAndItsCascadeCountsTowardTheRowLimit() throws Exception {
+        try (Connection connection = connect("admin", adminToken()); Statement statement = connection.createStatement()) {
+            statement.execute("CREATE TABLE fk_parent (id int PRIMARY KEY)");
+            statement.execute("CREATE TABLE fk_child (id int PRIMARY KEY,"
+                    + " parent_id int REFERENCES fk_parent (id) ON DELETE CASCADE)");
+
+            PSQLException orphan = assertThrows(PSQLException.class, () ->
+                    statement.execute("INSERT INTO fk_child VALUES (1, 999)"));
+            assertEquals("23503", orphan.getSQLState());
+            assertEquals(null, orphan.getServerErrorMessage().getFile());
+
+            statement.execute("INSERT INTO fk_parent VALUES (1)");
+            statement.execute("INSERT INTO fk_child SELECT g, 1 FROM generate_series(1, 1500) g");
+            statement.execute("INSERT INTO fk_child SELECT g, 1 FROM generate_series(1501, 3000) g");
+            PSQLException tooMany = assertThrows(PSQLException.class, () ->
+                    statement.execute("DELETE FROM fk_parent WHERE id = 1"));
+
+            assertEquals("54000", tooMany.getSQLState());
+            assertEquals("transaction row limit exceeded", tooMany.getServerErrorMessage().getMessage());
+            assertEquals(null, tooMany.getServerErrorMessage().getWhere());
+            assertEquals(null, tooMany.getServerErrorMessage().getFile());
+        }
+    }
+
+    @Test
     void aWriteConflictIsDsqlsOc000() throws Exception {
         try (Connection setup = connect("admin", adminToken()); Statement statement = setup.createStatement()) {
             statement.execute("CREATE TABLE conflict (id int PRIMARY KEY, n int)");

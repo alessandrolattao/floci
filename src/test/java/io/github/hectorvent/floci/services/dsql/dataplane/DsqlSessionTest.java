@@ -60,6 +60,31 @@ class DsqlSessionTest {
         assertArrayEquals(postgres, DsqlSession.inDsqlWords((byte) 'E', postgres));
     }
 
+    @Test
+    void postgresqlsOwnErrorLosesItsSourceLocationAsOnDsql() {
+        byte[] postgres = error(Map.of('C', "23503", 'M', "insert or update on table \"child\" violates foreign key"
+                + " constraint \"child_parent_id_fkey\"", 'F', "ri_triggers.c", 'L', "2608", 'R', "ri_ReportViolation"));
+
+        Map<Character, String> fields = PgWire.parseFields(DsqlSession.inDsqlWords((byte) 'E', postgres));
+
+        assertEquals("23503", fields.get('C'));
+        assertFalse(fields.containsKey('F'));
+        assertFalse(fields.containsKey('L'));
+        assertFalse(fields.containsKey('R'));
+    }
+
+    @Test
+    void aCascadePastTheRowLimitKeepsTheStatementItRanAndDropsSys() {
+        byte[] postgres = error(Map.of('C', "54000", 'M', "transaction row limit exceeded",
+                'W', "PL/pgSQL function sys._count_dml() line 14 at RAISE\n"
+                        + "SQL statement \"DELETE FROM ONLY \"fk3\".\"c_cascade\" WHERE $1 OPERATOR(pg_catalog.=) \"pid\"\""));
+
+        Map<Character, String> fields = PgWire.parseFields(DsqlSession.inDsqlWords((byte) 'E', postgres));
+
+        assertEquals("SQL statement \"DELETE FROM ONLY \"fk3\".\"c_cascade\" WHERE $1 OPERATOR(pg_catalog.=) \"pid\"\"",
+                fields.get('W'));
+    }
+
     private static byte[] error(Map<Character, String> fields) {
         Map<Character, String> ordered = new LinkedHashMap<>();
         ordered.put('S', fields.getOrDefault('S', "ERROR"));
