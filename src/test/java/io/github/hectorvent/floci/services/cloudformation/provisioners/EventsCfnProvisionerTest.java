@@ -53,6 +53,7 @@ class EventsCfnProvisionerTest {
             return node == null ? null : node.asText();
         });
         when(engine.resolveNode(any())).thenAnswer(inv -> inv.getArgument(0));
+        when(engine.resolveNodeOmittingNoValue(any())).thenAnswer(inv -> inv.getArgument(0));
         return new ProvisionContext(engine, REGION, "000000000000", "my-stack", priorPhysicalId);
     }
 
@@ -218,9 +219,9 @@ class EventsCfnProvisionerTest {
     }
 
     /**
-     * A member or list item that is AWS::NoValue, directly or as the Fn::If branch taken, is left
-     * out, as CloudFormation leaves it out of PutTargets, at any depth. A literal empty string is
-     * a value and stays, such as a tag's empty Value.
+     * With a real engine: a member or list item that is AWS::NoValue, directly or as the Fn::If
+     * branch taken, is left out, as CloudFormation leaves it out of PutTargets, at any depth. A
+     * literal empty string is a value and stays, such as a tag's empty Value.
      */
     @Test
     void membersThatAreNoValueAreLeftOutAndEmptyStringsKept() throws Exception {
@@ -235,7 +236,9 @@ class EventsCfnProvisionerTest {
                  "DeadLetterConfig": {"Ref": "AWS::NoValue"}}
                 """));
 
-        provisioner.provision(resource("AWS::Events::Rule", "Rule"), props, ctx(null));
+        provisioner.provision(resource("AWS::Events::Rule", "Rule"), props, new ProvisionContext(
+                CloudFormationTemplateEngine.standalone("000000000000", REGION, "my-stack", mapper, null),
+                REGION, "000000000000", "my-stack", null));
 
         Target put = onlyPutTarget();
         assertNull(put.getRoleArn());

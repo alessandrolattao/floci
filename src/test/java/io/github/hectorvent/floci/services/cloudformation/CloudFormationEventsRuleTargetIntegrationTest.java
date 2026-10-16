@@ -185,6 +185,36 @@ class CloudFormationEventsRuleTargetIntegrationTest {
         }
     }
 
+    /** An Fn::If that chooses the whole Targets list is resolved before the targets are read. */
+    @Test
+    void targetsAnFnIfChoosesAreProvisioned() {
+        String template = """
+                {"Conditions": {"Always": {"Fn::Equals": ["a", "a"]}},
+                 "Resources": {"Rule": {"Type": "AWS::Events::Rule", "Properties": {
+                   "Name": "cfn-rule-targets-if",
+                   "EventPattern": {"source": ["cfn.rule.targets.if"]},
+                   "Targets": {"Fn::If": ["Always",
+                     [{"Id": "Queue", "Arn": "arn:aws:sqs:us-east-1:000000000000:cfn-rule-targets-if"}],
+                     {"Ref": "AWS::NoValue"}]}}}}}
+                """;
+        given().contentType("application/x-www-form-urlencoded")
+                .formParam("Action", "CreateStack")
+                .formParam("StackName", "cfn-rule-targets-if")
+                .formParam("TemplateBody", template)
+                .when().post("/").then().statusCode(200);
+        try {
+            assertEquals("CREATE_COMPLETE", CfnStackWaits.awaitTerminal("cfn-rule-targets-if").status());
+            listTargets("cfn-rule-targets-if", "default")
+                    .body("Targets[0].Id", equalTo("Queue"))
+                    .body("Targets[0].Arn", equalTo("arn:aws:sqs:us-east-1:000000000000:cfn-rule-targets-if"));
+        } finally {
+            given().contentType("application/x-www-form-urlencoded")
+                    .formParam("Action", "DeleteStack")
+                    .formParam("StackName", "cfn-rule-targets-if")
+                    .when().post("/").then().statusCode(200);
+        }
+    }
+
     private static ValidatableResponse listTargets(String rule) {
         return listTargets(rule, BUS);
     }
