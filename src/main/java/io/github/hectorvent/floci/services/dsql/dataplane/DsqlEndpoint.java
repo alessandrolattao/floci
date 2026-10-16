@@ -65,6 +65,7 @@ public class DsqlEndpoint {
     private final Map<Long, DsqlDatabases.Backend> cancelKeys = new ConcurrentHashMap<>();
     private final Map<String, Set<Socket>> connections = new ConcurrentHashMap<>();
     private volatile ServerSocket server;
+    private volatile Duration transactionAgeLimit = Duration.ofSeconds(300);
 
     /** A cluster being served, and where its database answers. */
     record Route(String host, String arn, String region, String accountId, DsqlDatabases.Backend backend) {
@@ -168,6 +169,15 @@ public class DsqlEndpoint {
 
     int handshakeTimeoutMillis() {
         return HANDSHAKE_TIMEOUT_MILLIS;
+    }
+
+    /** How long a transaction may live, 300 seconds as on DSQL; tests shorten it. */
+    Duration transactionAgeLimit() {
+        return transactionAgeLimit;
+    }
+
+    void transactionAgeLimit(Duration limit) {
+        this.transactionAgeLimit = limit;
     }
 
     /**

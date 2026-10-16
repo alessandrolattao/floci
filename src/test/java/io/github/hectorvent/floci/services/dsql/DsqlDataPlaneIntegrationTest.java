@@ -5,7 +5,6 @@ import io.github.hectorvent.floci.services.dsql.dataplane.DsqlEndpoint;
 import io.github.hectorvent.floci.services.iam.IamService;
 import io.github.hectorvent.floci.testutil.SigV4TokenTestHelper;
 import io.quarkus.test.junit.QuarkusTest;
-import io.quarkus.test.junit.QuarkusTestProfile;
 import io.quarkus.test.junit.TestProfile;
 import io.restassured.specification.RequestSpecification;
 import jakarta.inject.Inject;
@@ -42,7 +41,7 @@ import static org.junit.jupiter.api.Assumptions.assumeTrue;
  * and errors measured on AWS (eu-west-1, 2026-10-16).
  */
 @QuarkusTest
-@TestProfile(DsqlDataPlaneIntegrationTest.WithDatabases.class)
+@TestProfile(DsqlDatabasesProfile.class)
 @TestInstance(TestInstance.Lifecycle.PER_CLASS)
 @Tag("docker")
 class DsqlDataPlaneIntegrationTest {
@@ -52,13 +51,6 @@ class DsqlDataPlaneIntegrationTest {
     private static final String AUTH = "AWS4-HMAC-SHA256 Credential=" + ACCOUNT
             + "/20261016/" + REGION + "/dsql/aws4_request, SignedHeaders=host, Signature=abc";
     private static final String ROLE_ARN = "arn:aws:iam::" + ACCOUNT + ":role/service/app-role";
-
-    public static final class WithDatabases implements QuarkusTestProfile {
-        @Override
-        public Map<String, String> getConfigOverrides() {
-            return Map.of("floci.services.dsql.mock", "false", "floci.services.dsql.port", "0");
-        }
-    }
 
     @Inject
     DockerClient dockerClient;

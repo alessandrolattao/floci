@@ -37,7 +37,6 @@ import java.util.concurrent.ConcurrentHashMap;
 final class DsqlSession {
 
     static final Duration CONNECTION_LIFETIME = Duration.ofHours(1);
-    static final Duration TRANSACTION_AGE_LIMIT = Duration.ofSeconds(300);
     private static final String SERIALIZATION_FAILURE = "40001";
     private static final String ACCESS_DENIED = "unable to accept connection, access denied";
 
@@ -276,13 +275,14 @@ final class DsqlSession {
     private boolean expired() {
         Instant start = transactionStart;
         return start != null && transactionStatus == 'T'
-                && Duration.between(start, Instant.now()).compareTo(TRANSACTION_AGE_LIMIT) > 0;
+                && Duration.between(start, Instant.now()).compareTo(endpoint.transactionAgeLimit()) > 0;
     }
 
     private String expiredStatement() {
         long age = Duration.between(transactionStart, Instant.now()).toSeconds();
-        return DsqlStatements.reject("54000", "transaction age limit of 300s exceeded",
-                "Current transaction age " + age + "s exceeds 300s");
+        long limit = endpoint.transactionAgeLimit().toSeconds();
+        return DsqlStatements.reject("54000", "transaction age limit of " + limit + "s exceeded",
+                "Current transaction age " + age + "s exceeds " + limit + "s");
     }
 
     /** A ROLLBACK always gets through, so a client can leave a transaction that ran out of time. */
