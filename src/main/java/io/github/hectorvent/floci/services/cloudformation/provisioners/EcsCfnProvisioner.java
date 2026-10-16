@@ -327,10 +327,13 @@ public class EcsCfnProvisioner implements CfnResourceProvisioner {
         if (node == null || node.isNull()) {
             return result;
         }
-        JsonNode resolved = ctx.engine().resolveNode(node);
+        // AWS::NoValue leaves out what it stands for, a list entry included, as CloudFormation does
+        // (measured: Add [!If [False, SYS_PTRACE, !Ref AWS::NoValue]] registers an empty add list).
+        JsonNode resolved = ctx.engine().resolveNodeOmittingNoValue(node);
         if (resolved == null || !resolved.isArray()) {
             return result;
         }
+        int index = 0;
         for (JsonNode item : resolved) {
             ContainerDefinition def = new ContainerDefinition();
             def.setName(item.path("Name").asText(null));
@@ -350,7 +353,7 @@ public class EcsCfnProvisioner implements CfnResourceProvisioner {
             def.setSecrets(parseSecrets(item.path("Secrets")));
             def.setLogConfiguration(parseLogConfiguration(item.path("LogConfiguration")));
             def.setFirelensConfiguration(parseFirelensConfiguration(item.path("FirelensConfiguration")));
-            Map<String, Object> linuxParameters = parseLinuxParameters(item.path("LinuxParameters"));
+            Map<String, Object> linuxParameters = parseLinuxParameters(item.path("LinuxParameters"), index++);
             if (linuxParameters != null) {
                 Map<String, Object> unparsed = new LinkedHashMap<>();
                 unparsed.put("linuxParameters", linuxParameters);
@@ -382,9 +385,11 @@ public class EcsCfnProvisioner implements CfnResourceProvisioner {
      * {@code linuxParameters}. So DescribeTaskDefinition shows them and the Fargate rules on them
      * apply, the same as for a definition registered through the API. Only the members the
      * template sets are written, and a value a Ref resolved to text is read as the boolean or
-     * number the template means.
+     * number the template means; the devices and tmpfs lists are always sent, empty when the
+     * template has none, as CloudFormation's handler sends them (measured). A tmpfs mount without
+     * a Size fails the resource with the handler's model validation error.
      */
-    private static Map<String, Object> parseLinuxParameters(JsonNode node) {
+    private static Map<String, Object> parseLinuxParameters(JsonNode node, int containerIndex) {
         if (node == null || !node.isObject()) {
             return null;
         }
@@ -396,32 +401,34 @@ public class EcsCfnProvisioner implements CfnResourceProvisioner {
             putStringList(kernelCapabilities, "drop", capabilities.path("Drop"));
             result.put("capabilities", kernelCapabilities);
         }
-        if (node.path("Devices").isArray()) {
-            List<Map<String, Object>> devices = new ArrayList<>();
-            for (JsonNode item : node.path("Devices")) {
-                Map<String, Object> device = new LinkedHashMap<>();
-                putText(device, "hostPath", item.path("HostPath"));
-                putText(device, "containerPath", item.path("ContainerPath"));
-                putStringList(device, "permissions", item.path("Permissions"));
-                devices.add(device);
-            }
-            result.put("devices", devices);
+        List<Map<String, Object>> devices = new ArrayList<>();
+        for (JsonNode item : node.path("Devices")) {
+            Map<String, Object> device = new LinkedHashMap<>();
+            putText(device, "hostPath", item.path("HostPath"));
+            putText(device, "containerPath", item.path("ContainerPath"));
+            putStringList(device, "permissions", item.path("Permissions"));
+            devices.add(device);
         }
+        result.put("devices", devices);
         putBoolean(result, "initProcessEnabled", "InitProcessEnabled", node.path("InitProcessEnabled"));
         putInt(result, "maxSwap", "MaxSwap", node.path("MaxSwap"));
         putInt(result, "sharedMemorySize", "SharedMemorySize", node.path("SharedMemorySize"));
         putInt(result, "swappiness", "Swappiness", node.path("Swappiness"));
-        if (node.path("Tmpfs").isArray()) {
-            List<Map<String, Object>> mounts = new ArrayList<>();
-            for (JsonNode item : node.path("Tmpfs")) {
-                Map<String, Object> mount = new LinkedHashMap<>();
-                putText(mount, "containerPath", item.path("ContainerPath"));
-                putStringList(mount, "mountOptions", item.path("MountOptions"));
-                putInt(mount, "size", "Size", item.path("Size"));
-                mounts.add(mount);
+        List<Map<String, Object>> mounts = new ArrayList<>();
+        int mountIndex = 0;
+        for (JsonNode item : node.path("Tmpfs")) {
+            if (!item.has("Size")) {
+                throw new AwsException("InvalidRequest", "Model validation failed (#/ContainerDefinitions/"
+                        + containerIndex + "/LinuxParameters/Tmpfs/" + mountIndex + ": required key [Size] not found)", 400);
             }
-            result.put("tmpfs", mounts);
+            Map<String, Object> mount = new LinkedHashMap<>();
+            putText(mount, "containerPath", item.path("ContainerPath"));
+            putStringList(mount, "mountOptions", item.path("MountOptions"));
+            putInt(mount, "size", "Size", item.path("Size"));
+            mounts.add(mount);
+            mountIndex++;
         }
+        result.put("tmpfs", mounts);
         return result;
     }
 

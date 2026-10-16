@@ -137,6 +137,86 @@ class CloudFormationEcsLinuxParametersIntegrationTest {
         assertFargateSwapRefused(name, CfnStackWaits.awaitTerminal(name));
     }
 
+    /**
+     * Measured (eu-west-1, 2026-10-16): AWS::NoValue in a list leaves its entry out, and the devices
+     * and tmpfs lists are registered empty when the template has none.
+     */
+    @Test
+    void aNoValueInAListLeavesItsEntryOut() {
+        String name = "cfn-linux-parameters-novalue-" + System.nanoTime();
+        String template = """
+                {
+                  "Conditions": {"Never": {"Fn::Equals": ["a", "b"]}},
+                  "Resources": {
+                    "TaskDef": {
+                      "Type": "AWS::ECS::TaskDefinition",
+                      "Properties": {
+                        "Family": "%s",
+                        "RequiresCompatibilities": ["EC2"],
+                        "ContainerDefinitions": [{
+                          "Name": "worker", "Image": "busybox", "Memory": 512,
+                          "LinuxParameters": {
+                            "Capabilities": {
+                              "Add": [{"Fn::If": ["Never", "SYS_PTRACE", {"Ref": "AWS::NoValue"}]}],
+                              "Drop": ["NET_RAW", {"Fn::If": ["Never", "MKNOD", {"Ref": "AWS::NoValue"}]}]},
+                            "Devices": [{"Fn::If": ["Never", {"HostPath": "/dev/null"}, {"Ref": "AWS::NoValue"}]}]
+                          }
+                        }]
+                      }
+                    }
+                  }
+                }
+                """;
+        stacksToDelete.add(name);
+        createStack(name, template.formatted(name));
+        assertEquals("CREATE_COMPLETE", CfnStackWaits.awaitTerminal(name).status());
+
+        given().contentType(ECS_CT)
+                .header("X-Amz-Target", ECS_TARGET + "DescribeTaskDefinition")
+                .body("{\"taskDefinition\":\"" + name + "\"}")
+                .when().post("/").then().statusCode(200)
+                .body("taskDefinition.containerDefinitions[0].linuxParameters", equalTo(Map.of(
+                        "capabilities", Map.of("add", List.of(), "drop", List.of("NET_RAW")),
+                        "devices", List.of(),
+                        "tmpfs", List.of())));
+    }
+
+    /** Measured: a tmpfs mount without a Size fails the handler's model validation. */
+    @Test
+    void aTmpfsMountWithoutASizeFailsTheResource() {
+        String name = "cfn-linux-parameters-tmpfs-" + System.nanoTime();
+        String template = """
+                {
+                  "Resources": {
+                    "TaskDef": {
+                      "Type": "AWS::ECS::TaskDefinition",
+                      "Properties": {
+                        "Family": "%s",
+                        "RequiresCompatibilities": ["EC2"],
+                        "ContainerDefinitions": [{
+                          "Name": "worker", "Image": "busybox", "Memory": 512,
+                          "LinuxParameters": {"Tmpfs": [{"ContainerPath": "/t"}]}
+                        }]
+                      }
+                    }
+                  }
+                }
+                """;
+        stacksToDelete.add(name);
+        createStack(name, template.formatted(name));
+        CfnStackWaits.StackState state = CfnStackWaits.awaitTerminal(name);
+
+        assertEquals("ROLLBACK_COMPLETE", state.status());
+        List<String> reasons = given().contentType("application/x-www-form-urlencoded")
+                .formParam("Action", "DescribeStackEvents")
+                .formParam("StackName", name)
+                .when().post("/").then().statusCode(200).extract().xmlPath()
+                .getList("**.findAll { it.name() == 'ResourceStatusReason' }", String.class);
+        assertTrue(reasons.stream().anyMatch(reason -> reason != null && reason.contains(
+                "Model validation failed (#/ContainerDefinitions/0/LinuxParameters/Tmpfs/0: required key [Size] not found)")),
+                reasons.toString());
+    }
+
     private static void assertFargateSwapRefused(String name, CfnStackWaits.StackState state) {
         assertEquals("ROLLBACK_COMPLETE", state.status());
         List<String> reasons = given().contentType("application/x-www-form-urlencoded")

@@ -72,6 +72,7 @@ class EcsCfnProvisionerTest {
             return node == null || node.isMissingNode() || node.isNull() ? null : node.asText();
         });
         when(engine.resolveNode(any())).thenAnswer(inv -> inv.getArgument(0));
+        when(engine.resolveNodeOmittingNoValue(any())).thenAnswer(inv -> inv.getArgument(0));
         // resolveStringList delegates to the real engine method; for the literal arrays these
         // tests use it just walks the array and calls resolve(...) per element, stubbed above.
         when(engine.resolveStringList(any())).thenCallRealMethod();
@@ -235,13 +236,15 @@ class EcsCfnProvisionerTest {
 
         provisioner.provision(resource("AWS::ECS::TaskDefinition", "TaskDef"), props, ctx());
 
-        assertEquals(Map.of("linuxParameters", Map.of("initProcessEnabled", true, "sharedMemorySize", 128)),
+        assertEquals(Map.of("linuxParameters", Map.of("initProcessEnabled", true, "sharedMemorySize", 128,
+                        "devices", List.of(), "tmpfs", List.of())),
                 registeredContainer().getUnparsed());
     }
 
     /**
-     * An Fn::If that picks AWS::NoValue resolves to empty text, which leaves the member out as if
-     * the template had not set it; a value that is not an integer fails the resource.
+     * Empty text, what a parameter can resolve to, leaves a member out as if the template had not
+     * set it; a value that is not an integer fails the resource, and a tmpfs mount without a Size
+     * fails the handler's model validation.
      */
     @Test
     void aLinuxParameterLeftOutByNoValueIsOmittedAndAnInvalidOneIsRefused() {
@@ -258,8 +261,17 @@ class EcsCfnProvisionerTest {
 
         provisioner.provision(resource("AWS::ECS::TaskDefinition", "TaskDef"), props, ctx());
 
-        assertEquals(Map.of("linuxParameters", Map.of("tmpfs", List.of(Map.of("containerPath", "/scratch")))),
+        assertEquals(Map.of("linuxParameters", Map.of("devices", List.of(),
+                        "tmpfs", List.of(Map.of("containerPath", "/scratch")))),
                 registeredContainer().getUnparsed());
+
+        ObjectNode noSize = mapper.createObjectNode().put("Family", "web");
+        noSize.putArray("ContainerDefinitions").addObject().put("Name", "app").put("Image", "nginx:1")
+                .putObject("LinuxParameters").putArray("Tmpfs").addObject().put("ContainerPath", "/scratch");
+        AwsException refusedSize = assertThrows(AwsException.class,
+                () -> provisioner.provision(resource("AWS::ECS::TaskDefinition", "TaskDef"), noSize, ctx()));
+        assertEquals("Model validation failed (#/ContainerDefinitions/0/LinuxParameters/Tmpfs/0: required key [Size]"
+                + " not found)", refusedSize.getMessage());
 
         ObjectNode invalid = mapper.createObjectNode().put("Family", "web");
         invalid.putArray("ContainerDefinitions").addObject().put("Name", "app").put("Image", "nginx:1")
