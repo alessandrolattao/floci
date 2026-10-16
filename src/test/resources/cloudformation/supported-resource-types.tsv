@@ -65,6 +65,7 @@ AWS::Cognito::UserPoolResourceServer	CognitoResourceServerCfnProvisioner
 AWS::Cognito::UserPoolUser	CognitoUserPoolUserCfnProvisioner
 AWS::Cognito::UserPoolUserToGroupAttachment	CognitoUserPoolUserToGroupAttachmentCfnProvisioner
 AWS::Config::ConfigRule	ConfigCfnProvisioner
+AWS::DSQL::Cluster	DsqlCfnProvisioner
 AWS::DynamoDB::GlobalTable	DynamoDbCfnProvisioner
 AWS::DynamoDB::Table	DynamoDbCfnProvisioner
 AWS::EC2::EIP	Ec2NetworkCfnProvisioner
