@@ -339,10 +339,11 @@ final class DsqlSession {
     }
 
     /**
-     * An error or notice as DSQL words it. An optimistic concurrency conflict is DSQL's OC000.
-     * What Floci's {@code sys} functions raise carries no PL/pgSQL context, as DSQL's own errors
-     * carry none, and an error raised there no source location either; a notice keeps its
-     * location, as the one {@code sys.wait_for_job} raises on DSQL does.
+     * An error or notice as DSQL words it (measured on AWS). An optimistic concurrency conflict is
+     * DSQL's OC000. An error carries no source location, PostgreSQL's own included, while a notice
+     * keeps its location. The context keeps what the client's SQL ran, such as the statement a
+     * foreign key's cascade ran, and drops the lines of Floci's {@code sys} functions, as DSQL's
+     * context never shows its own.
      */
     static byte[] inDsqlWords(byte type, byte[] body) {
         Map<Character, String> fields = PgWire.parseFields(body);
@@ -354,17 +355,25 @@ final class DsqlSession {
             conflict.put('M', "change conflicts with another transaction (OC000)");
             return PgWire.fields(conflict);
         }
+        boolean changed = false;
         String where = fields.get('W');
-        if (where == null || !where.contains("function sys.")) {
-            return body;
+        if (where != null) {
+            String kept = String.join("\n", where.lines().filter(line -> !line.contains("function sys.")).toList());
+            if (!kept.equals(where)) {
+                changed = true;
+                if (kept.isEmpty()) {
+                    fields.remove('W');
+                } else {
+                    fields.put('W', kept);
+                }
+            }
         }
-        fields.remove('W');
         if (type == 'E') {
-            fields.remove('F');
-            fields.remove('L');
-            fields.remove('R');
+            changed |= fields.remove('F') != null;
+            changed |= fields.remove('L') != null;
+            changed |= fields.remove('R') != null;
         }
-        return PgWire.fields(fields);
+        return changed ? PgWire.fields(fields) : body;
     }
 
     /** A refusal as DSQL words every one: FATAL, with the session's id as its detail. */

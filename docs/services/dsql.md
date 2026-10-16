@@ -88,6 +88,10 @@ The database is PostgreSQL 16 at `REPEATABLE READ`, with DSQL's dialect installe
   `TRUNCATE`, `LISTEN`/`NOTIFY`, `VACUUM`, sequences without a `CACHE` of 1 or at least 65536,
   `ALTER TABLE ... ADD COLUMN` with a constraint or default, `ADD CONSTRAINT`, `FOR SHARE` and `FOR
   NO KEY UPDATE`, advisory locks, and isolation levels other than repeatable read.
+- Foreign keys work as on DSQL: declared in `CREATE TABLE`, enforced, with their `ON DELETE` and
+  `ON UPDATE` actions and `DEFERRABLE`; rows a cascade changes count toward the 3,000-row limit.
+  Adding one with `ALTER TABLE` is refused, as DSQL refuses it.
+- Errors carry no source location, as DSQL's carry none; notices keep theirs.
 - `sys.iam_session_user()`, `sys.current_session_id()`, `sys.dsql_major_version()`,
   `sys.cluster_size()` and `sys.cluster_size_limit()` answer as on DSQL.
 
@@ -101,6 +105,10 @@ The database is PostgreSQL 16 at `REPEATABLE READ`, with DSQL's dialect installe
   while its database starts, and serves once it is `ACTIVE`.
 - Clusters are single-Region: multi-Region properties are stored and returned, not replicated.
 - `sys` also holds the tables behind Floci's jobs and IAM mappings.
+- DSQL's primary key covers every column of its table, and its definition reads `PRIMARY KEY (id)
+  INCLUDE (...)`; Floci's reads `PRIMARY KEY (id)`.
+- A statement Floci refuses carries no position (`LINE 1: ...` in psql), and a cascade past the row
+  limit carries no context naming the statement the cascade ran; DSQL gives both.
 
 ## CloudFormation
 
