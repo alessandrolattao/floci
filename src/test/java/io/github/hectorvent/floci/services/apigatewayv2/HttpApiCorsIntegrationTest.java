@@ -16,6 +16,7 @@ import java.net.InetSocketAddress;
 import java.nio.charset.StandardCharsets;
 
 import static io.restassured.RestAssured.given;
+import static org.hamcrest.Matchers.containsString;
 import static org.hamcrest.Matchers.equalTo;
 import static org.hamcrest.Matchers.nullValue;
 
@@ -157,7 +158,7 @@ class HttpApiCorsIntegrationTest {
 
     @Test
     @Order(6)
-    void thePreflightIsStillAnsweredFromTheConfiguration() {
+    void aPreflightNoRouteMatchesIsAnsweredFromTheConfiguration() {
         given()
                 .header("Origin", APP_ORIGIN)
                 .header("Access-Control-Request-Method", "POST")
@@ -165,9 +166,11 @@ class HttpApiCorsIntegrationTest {
                 .then()
                 .statusCode(204)
                 .header("Access-Control-Allow-Origin", equalTo(APP_ORIGIN))
-                .header("Access-Control-Allow-Methods", equalTo("GET, POST, DELETE"))
-                .header("Access-Control-Allow-Headers", equalTo("authorization, content-type"))
+                .header("Access-Control-Allow-Methods", equalTo("GET,POST,DELETE"))
+                .header("Access-Control-Allow-Headers", equalTo("authorization,content-type"))
+                .header("Access-Control-Allow-Credentials", equalTo("true"))
                 .header("Access-Control-Max-Age", equalTo("3600"))
+                .header("Access-Control-Expose-Headers", nullValue())
                 .header("Vary", nullValue());
     }
 
@@ -244,8 +247,114 @@ class HttpApiCorsIntegrationTest {
                 .header("Access-Control-Expose-Headers", equalTo("x-backend"));
     }
 
+    /**
+     * Measured (eu-west-1, 2026-10-16): a preflight a route matches goes through that route, so an
+     * ANY route's integration answers it and an authorizer refuses it, and either answer carries the
+     * preflight headers.
+     */
     @Test
     @Order(9)
+    void aPreflightARouteMatchesGoesThroughTheRoute() {
+        String integrationId = given()
+                .contentType(ContentType.JSON)
+                .body("{\"integrationType\":\"HTTP_PROXY\",\"integrationUri\":\"http://127.0.0.1:"
+                        + backendPort + "/hello\",\"payloadFormatVersion\":\"1.0\"}")
+                .when().post("/v2/apis/" + corsApiId + "/integrations")
+                .then().statusCode(201)
+                .extract().path("integrationId");
+        String authorizerId = given()
+                .contentType(ContentType.JSON)
+                .body("""
+                        {"name":"jwt-any","authorizerType":"JWT",
+                         "identitySource":["$request.header.Authorization"],
+                         "jwtConfiguration":{"audience":["cors"],"issuer":"https://issuer.example.com"}}""")
+                .when().post("/v2/apis/" + corsApiId + "/authorizers")
+                .then().statusCode(201)
+                .extract().path("authorizerId");
+        given()
+                .contentType(ContentType.JSON)
+                .body("{\"routeKey\":\"ANY /open/{proxy+}\",\"target\":\"integrations/" + integrationId + "\"}")
+                .when().post("/v2/apis/" + corsApiId + "/routes")
+                .then().statusCode(201);
+        given()
+                .contentType(ContentType.JSON)
+                .body("{\"routeKey\":\"ANY /secure/{proxy+}\",\"authorizationType\":\"JWT\",\"authorizerId\":\""
+                        + authorizerId + "\",\"target\":\"integrations/" + integrationId + "\"}")
+                .when().post("/v2/apis/" + corsApiId + "/routes")
+                .then().statusCode(201);
+
+        given()
+                .header("Origin", APP_ORIGIN)
+                .header("Access-Control-Request-Method", "GET")
+                .when().options("/execute-api/" + corsApiId + "/$default/open/x")
+                .then()
+                .statusCode(200)
+                .body(equalTo(BACKEND_BODY))
+                .header("Access-Control-Allow-Origin", equalTo(APP_ORIGIN))
+                .header("Access-Control-Allow-Methods", equalTo("GET,POST,DELETE"))
+                .header("Access-Control-Max-Age", equalTo("3600"));
+        given()
+                .header("Origin", APP_ORIGIN)
+                .header("Access-Control-Request-Method", "GET")
+                .when().options("/execute-api/" + corsApiId + "/$default/secure/x")
+                .then()
+                .statusCode(401)
+                .header("Access-Control-Allow-Origin", equalTo(APP_ORIGIN))
+                .header("Access-Control-Allow-Methods", equalTo("GET,POST,DELETE"));
+        given()
+                .header("Origin", APP_ORIGIN)
+                .header("Access-Control-Request-Method", "PATCH")
+                .when().options("/execute-api/" + corsApiId + "/$default/open/x")
+                .then()
+                .statusCode(200)
+                .header("Access-Control-Allow-Origin", nullValue())
+                .header("Access-Control-Allow-Methods", nullValue());
+    }
+
+    /**
+     * Measured: a function that is gone fails the request with API Gateway's 500, which carries the
+     * CORS headers, while a route without a target answers as an unmatched one, without them.
+     */
+    @Test
+    @Order(10)
+    void apiGatewaysOwnAnswersOnARoute() {
+        String integrationId = given()
+                .contentType(ContentType.JSON)
+                .body("{\"integrationType\":\"AWS_PROXY\",\"integrationUri\":"
+                        + "\"arn:aws:lambda:us-east-1:000000000000:function:cors-gone\",\"payloadFormatVersion\":\"2.0\"}")
+                .when().post("/v2/apis/" + corsApiId + "/integrations")
+                .then().statusCode(201)
+                .extract().path("integrationId");
+        given()
+                .contentType(ContentType.JSON)
+                .body("{\"routeKey\":\"GET /gone\",\"target\":\"integrations/" + integrationId + "\"}")
+                .when().post("/v2/apis/" + corsApiId + "/routes")
+                .then().statusCode(201);
+        given()
+                .contentType(ContentType.JSON)
+                .body("{\"routeKey\":\"GET /notarget\"}")
+                .when().post("/v2/apis/" + corsApiId + "/routes")
+                .then().statusCode(201);
+
+        given()
+                .header("Origin", APP_ORIGIN)
+                .when().get("/execute-api/" + corsApiId + "/$default/gone")
+                .then()
+                .statusCode(500)
+                .body(containsString("Internal Server Error"))
+                .header("Access-Control-Allow-Origin", equalTo(APP_ORIGIN))
+                .header("Access-Control-Expose-Headers", equalTo("x-request-id"));
+        given()
+                .header("Origin", APP_ORIGIN)
+                .when().get("/execute-api/" + corsApiId + "/$default/notarget")
+                .then()
+                .statusCode(404)
+                .body(containsString("Not Found"))
+                .header("Access-Control-Allow-Origin", nullValue());
+    }
+
+    @Test
+    @Order(20)
     void cleanup() {
         String mappingId = given()
                 .when().get("/v2/domainnames/" + DOMAIN + "/apimappings")
