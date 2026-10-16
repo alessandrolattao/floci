@@ -1258,9 +1258,6 @@ public class ContainerLifecycleManager {
         if (!capAdd.isEmpty()) {
             hostConfig.withCapAdd(capAdd.toArray(new Capability[0]));
         }
-        if (linux.init()) {
-            hostConfig.withInit(true);
-        }
         if (!linux.devices().isEmpty()) {
             hostConfig.withDevices(linux.devices());
         }
