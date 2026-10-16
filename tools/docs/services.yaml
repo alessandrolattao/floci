@@ -208,6 +208,10 @@ services:
     doc: docs/services/docdb.md
     sources:
       - { path: src/main/java/io/github/hectorvent/floci/services/docdb/DocDbQueryHandler.java, mode: switch }
+  - service: dsql
+    doc: docs/services/dsql.md
+    sources:
+      - { path: src/main/java/io/github/hectorvent/floci/services/dsql/DsqlController.java, mode: rest }
   - service: efs
     doc: docs/services/efs.md
     sources:

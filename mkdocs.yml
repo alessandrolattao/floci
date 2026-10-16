@@ -140,6 +140,7 @@ nav:
     - AWS Service Catalog: services/service-catalog.md
     - ElastiCache: services/elasticache.md
     - MemoryDB: services/memorydb.md
+    - Aurora DSQL: services/dsql.md
     - RDS: services/rds.md
     - RDS Data API: services/rds-data.md
     - Timestream for InfluxDB: services/timestream-influxdb.md

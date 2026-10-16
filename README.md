@@ -298,7 +298,7 @@ Floci supports local emulation for application services, data services, eventing
 | API and identity | API Gateway REST, API Gateway v2, AppSync, Cognito, Cognito Identity, ACM, Route53, Route 53 Resolver, Cloud Map, Global Accelerator |
 | Containers and compute | ECS, EC2, Lightsail, EKS, MWAA, ECR, EFS, CodeBuild, CodeDeploy, CodePipeline, CodeGuru Reviewer, CodeArtifact, AWS Batch, Auto Scaling, Application Auto Scaling, Elastic Beanstalk, ELB v2, ELB Classic |
 | Data, analytics, and AI | Athena, Glue, Lake Formation, EMR, EMR Serverless, Redshift, Redshift Data API, Redshift Serverless, Firehose, Managed Service for Apache Flink, OpenSearch, S3 Tables, S3 Vectors, Textract, Transcribe, Comprehend, Rekognition, Translate, Bedrock, Bedrock Runtime, Bedrock AgentCore, Bedrock AgentCore Control, SageMaker |
-| Databases and caching | RDS, RDS Data API, Neptune, DocumentDB, DMS, MemoryDB, ElastiCache, Timestream for InfluxDB |
+| Databases and caching | Aurora DSQL, RDS, RDS Data API, Neptune, DocumentDB, DMS, MemoryDB, ElastiCache, Timestream for InfluxDB |
 | Messaging and transfer | SES, Kinesis, MSK, Amazon MQ, Transfer Family, DataSync, IoT Core, Amazon Connect, Amazon AppIntegrations |
 | Security and governance | AWS Network Firewall, AWS RAM, Service Quotas, WAF v2, GuardDuty, Amazon Inspector, CloudTrail, CloudFront, Resource Groups Tagging API, Resource Explorer 2, CloudHSM v2, Organizations, AWS Account Management, IAM Access Analyzer, IAM Identity Center (SSO Admin, OIDC, Access Portal, SCIM), Identity Store, Amazon Macie, Amazon Detective, Security Hub, Amazon Verified Permissions, Control Catalog, Control Tower, Service Catalog, AWS Marketplace |
 | Cost and billing | AWS Budgets, Pricing, Cost Explorer, Cost and Usage Reports, BCM Pricing Calculator, BCM Data Exports |
@@ -337,6 +337,7 @@ For operation-level compatibility, see the [Services Overview](https://floci.io/
 | CloudWatch OAM | In-process | Full 15-operation sink, policy, cross-account link, and tagging API |
 | ElastiCache | Real Docker | Redis / Valkey protocol, IAM auth, SigV4 validation |
 | MemoryDB | Real Docker | Redis / Valkey protocol via real containers; JSON 1.1 control plane; reuses ElastiCache RESP proxy |
+| Aurora DSQL | Real Docker, mock mode available | PostgreSQL 16 per cluster behind a TLS endpoint with IAM token auth, DSQL's dialect and limits, `AWS IAM GRANT` role mappings |
 | RDS | Real Docker | PostgreSQL, MySQL, MariaDB, IAM auth, JDBC-compatible engines |
 | Timestream for InfluxDB | Real Docker, mock mode available | InfluxDB 2.x DB instances and read replica clusters via `influxdb:2.7`; initial auth secret in Secrets Manager; backups and restore through the influx CLI |
 | RDS Data API | REST JSON over real RDS containers | Raw SQL execution and transactions for local MySQL / MariaDB RDS resources |
