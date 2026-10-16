@@ -10,6 +10,7 @@ import org.junit.jupiter.params.provider.CsvSource;
 import org.junit.jupiter.params.provider.ValueSource;
 
 import java.nio.charset.StandardCharsets;
+import java.time.Duration;
 import java.time.Instant;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
@@ -151,6 +152,22 @@ class SigV4RequestValidatorTest {
                 "AKIDRDS", "secret-rds", Instant.now().minusSeconds(60), 900);
 
         assertFalse(validate(iamService, token.replace("DBUser=app%20user", "DBUser=app%2Buser")));
+    }
+
+    @Test
+    void validateTakesAnExpiredTokenOnlyWithinTheGraceItIsGiven() throws Exception {
+        IamService iamService = IamServiceTestHelper.iamServiceWithAccessKey("AKIDDSQL", "secret-dsql");
+        String token = SigV4TokenTestHelper.createDsqlToken("abc.dsql.eu-west-1.localhost.floci.io", "eu-west-1",
+                "DbConnectAdmin", "AKIDDSQL", "secret-dsql", Instant.now().minusSeconds(63), 60, null);
+        String rawQuery = token.substring(token.indexOf('?') + 1);
+        SigV4RequestValidator validator = new SigV4RequestValidator(iamService);
+
+        assertTrue(validator.validate(rawQuery, "abc.dsql.eu-west-1.localhost.floci.io", "DbConnectAdmin", "DBUser",
+                false, null, "DSQL IAM token", null, Duration.ofSeconds(5)));
+        assertFalse(validator.validate(rawQuery, "abc.dsql.eu-west-1.localhost.floci.io", "DbConnectAdmin", "DBUser",
+                false, null, "DSQL IAM token", null, Duration.ZERO));
+        assertFalse(validator.validate(rawQuery, "abc.dsql.eu-west-1.localhost.floci.io", "DbConnect", "DBUser",
+                false, null, "DSQL IAM token", null, Duration.ofSeconds(5)));
     }
 
     private static boolean validate(IamService iamService, String token) {
