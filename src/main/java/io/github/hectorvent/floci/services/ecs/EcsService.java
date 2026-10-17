@@ -872,9 +872,11 @@ public class EcsService implements ContainerTeardown, ResourceProvider, Resettab
         validateEphemeralStorage(request.getEphemeralStorage());
         validateContainerDependencies(containerDefs);
         validateFirelensS3Config(containerDefs, fargate);
+        validateLinuxParameters(containerDefs);
         if (fargate) {
             validateFargateUnsupportedParameters(request);
         }
+        normalizeLinuxParameters(containerDefs);
         String family = request.getFamily();
         int revision = latestRevisions.compute(familyKey(region, family),
                 (key, latest) -> (latest != null ? latest : latestRevision(region, family)) + 1);
@@ -1143,6 +1145,18 @@ public class EcsService implements ContainerTeardown, ResourceProvider, Resettab
         }
     }
 
+    /** The one capability a Fargate container may add (KernelCapabilities, "add"). */
+    private static final String FARGATE_CAPABILITY = "SYS_PTRACE";
+
+    /** The values KernelCapabilities lists for {@code add} and {@code drop}. */
+    private static final Set<String> KERNEL_CAPABILITIES = Set.of(
+            "ALL", "AUDIT_CONTROL", "AUDIT_WRITE", "BLOCK_SUSPEND", "CHOWN", "DAC_OVERRIDE",
+            "DAC_READ_SEARCH", "FOWNER", "FSETID", "IPC_LOCK", "IPC_OWNER", "KILL", "LEASE",
+            "LINUX_IMMUTABLE", "MAC_ADMIN", "MAC_OVERRIDE", "MKNOD", "NET_ADMIN", "NET_BIND_SERVICE",
+            "NET_BROADCAST", "NET_RAW", "SETFCAP", "SETGID", "SETPCAP", "SETUID", "SYS_ADMIN",
+            "SYS_BOOT", "SYS_CHROOT", "SYS_MODULE", "SYS_NICE", "SYS_PACCT", "SYS_PTRACE", "SYS_RAWIO",
+            "SYS_RESOURCE", "SYS_TIME", "SYS_TTY_CONFIG", "SYSLOG", "WAKE_ALARM");
+
     private static void rejectOnFargate(boolean present, String parameter) {
         if (present) {
             throw new AwsException("ClientException",
@@ -1150,15 +1164,187 @@ public class EcsService implements ContainerTeardown, ResourceProvider, Resettab
         }
     }
 
-    /** {@code maxSwap} and {@code swappiness} have no meaning on Fargate's managed kernel. */
-    @SuppressWarnings("unchecked")
+    /**
+     * The {@code linuxParameters} Fargate cannot honour, in the order RegisterTaskDefinition
+     * checks them on AWS: host devices, the shared memory size, swap, then any capability but
+     * {@code SYS_PTRACE}, the only one Fargate adds, matched as written. AWS words these without
+     * the trailing period its other Fargate refusals carry.
+     */
     private static void validateFargateLinuxParameters(ContainerDefinition def) {
-        Object linuxParameters = def.getUnparsed() == null ? null : def.getUnparsed().get("linuxParameters");
-        if (!(linuxParameters instanceof Map<?, ?> parameters)) {
+        Map<?, ?> parameters = linuxParameters(def);
+        if (parameters == null) {
             return;
         }
-        rejectOnFargate(parameters.get("maxSwap") != null, "maxSwap");
-        rejectOnFargate(parameters.get("swappiness") != null, "swappiness");
+        rejectLinuxParameterOnFargate(parameters.get("devices") instanceof Collection<?> devices
+                && !devices.isEmpty(), "devices");
+        rejectLinuxParameterOnFargate(parameters.get("sharedMemorySize") != null, "sharedMemorySize");
+        rejectLinuxParameterOnFargate(parameters.get("maxSwap") != null, "maxSwap");
+        rejectLinuxParameterOnFargate(parameters.get("swappiness") != null, "swappiness");
+        for (String capability : capabilities(parameters, "add")) {
+            if (!FARGATE_CAPABILITY.equals(capability)) {
+                throw new AwsException("ClientException", capability + " is not allowed on Fargate.", 400);
+            }
+        }
+    }
+
+    private static void rejectLinuxParameterOnFargate(boolean present, String parameter) {
+        if (present) {
+            throw new AwsException("ClientException",
+                    "Fargate compatible task definitions do not support " + parameter, 400);
+        }
+    }
+
+    /** The tmpfs mount options the Tmpfs reference lists, matched as written, before any {@code =value}. */
+    private static final Set<String> TMPFS_MOUNT_OPTIONS = Set.of(
+            "defaults", "ro", "rw", "suid", "nosuid", "dev", "nodev", "exec", "noexec", "sync", "async",
+            "dirsync", "remount", "mand", "nomand", "atime", "noatime", "diratime", "nodiratime", "bind",
+            "rbind", "unbindable", "runbindable", "private", "rprivate", "shared", "rshared", "slave",
+            "rslave", "relatime", "norelatime", "strictatime", "nostrictatime", "mode", "uid", "gid",
+            "nr_inodes", "nr_blocks", "mpol");
+    private static final Set<String> DEVICE_PERMISSIONS = Set.of("read", "write", "mknod");
+
+    /**
+     * The {@code linuxParameters} rules RegisterTaskDefinition applies whatever the launch type,
+     * before Fargate's own, with the messages and in the order measured on AWS (eu-west-1,
+     * 2026-10-03 and 2026-10-16): every capability one the KernelCapabilities reference lists, in
+     * any case and without the {@code CAP_} prefix; every device with a host path and only read,
+     * write and mknod as permissions, as written; every tmpfs mount with a container path, a size
+     * above zero and options the reference lists; a shared memory size above zero; and swap with a
+     * swappiness, a swap size of zero or more and a swappiness from 0 to 100.
+     */
+    private static void validateLinuxParameters(List<ContainerDefinition> containerDefs) {
+        if (containerDefs == null) {
+            return;
+        }
+        for (ContainerDefinition def : containerDefs) {
+            Map<?, ?> parameters = linuxParameters(def);
+            if (parameters == null) {
+                continue;
+            }
+            for (String list : List.of("add", "drop")) {
+                List<String> unrecognized = new ArrayList<>();
+                for (String capability : capabilities(parameters, list)) {
+                    if (!KERNEL_CAPABILITIES.contains(capability.toUpperCase(Locale.ROOT))) {
+                        unrecognized.add(capability);
+                    }
+                }
+                if (!unrecognized.isEmpty()) {
+                    throw new AwsException("ClientException",
+                            "Unrecognized Linux capabilities in " + list + ": " + unrecognized, 400);
+                }
+            }
+            for (Map<?, ?> device : entries(parameters.get("devices"))) {
+                if (!(device.get("hostPath") instanceof String hostPath) || hostPath.isBlank()) {
+                    throw new AwsException("ClientException", "Device cannot have empty hostPath", 400);
+                }
+                if (device.get("permissions") instanceof Collection<?> permissions) {
+                    for (Object permission : permissions) {
+                        if (!DEVICE_PERMISSIONS.contains(String.valueOf(permission))) {
+                            throw new AwsException("ClientException",
+                                    "Invalid permission: " + permission + " for device " + hostPath, 400);
+                        }
+                    }
+                }
+            }
+            for (Map<?, ?> mount : entries(parameters.get("tmpfs"))) {
+                if (!(mount.get("containerPath") instanceof String containerPath) || containerPath.isBlank()) {
+                    throw new AwsException("ClientException",
+                            "All tmpfs mounts must have a specified containerPath value.", 400);
+                }
+                if (!(mount.get("size") instanceof Number size) || size.longValue() <= 0) {
+                    throw new AwsException("ClientException", "The container has an invalid tmpfs size value"
+                            + " specified. It must be a non-zero, non-negative integer.", 400);
+                }
+                if (mount.get("mountOptions") instanceof Collection<?> options) {
+                    for (Object option : options) {
+                        String name = String.valueOf(option);
+                        if (!TMPFS_MOUNT_OPTIONS.contains(name.contains("=") ? name.substring(0, name.indexOf('=')) : name)) {
+                            throw new AwsException("ClientException",
+                                    "The " + name + " tmpfs mount option specified is invalid.", 400);
+                        }
+                    }
+                }
+            }
+            if (parameters.get("sharedMemorySize") instanceof Number sharedMemorySize
+                    && sharedMemorySize.longValue() <= 0) {
+                throw new AwsException("ClientException", "The container has an invalid shared memory volume"
+                        + " size. It must be a non-zero, non-negative integer.", 400);
+            }
+            if (parameters.get("maxSwap") != null && parameters.get("swappiness") == null) {
+                throw new AwsException("ClientException",
+                        "When a container has a swap memory, it must also specify a swappiness value.", 400);
+            }
+            if (parameters.get("maxSwap") instanceof Number maxSwap) {
+                if (maxSwap.longValue() < 0) {
+                    throw new AwsException("ClientException",
+                            "The container has an invalid swap memory size. It must be non-negative integer.", 400);
+                }
+                if (parameters.get("swappiness") instanceof Number swappiness
+                        && (swappiness.longValue() < 0 || swappiness.longValue() > 100)) {
+                    throw new AwsException("ClientException",
+                            "The container has an invalid swappiness value. It must be between 0 and 100.", 400);
+                }
+            }
+        }
+    }
+
+    /**
+     * The {@code linuxParameters} as RegisterTaskDefinition stores them (measured): a swappiness
+     * without a swap size is dropped, whatever its value, and capabilities always carry both an
+     * {@code add} and a {@code drop} list.
+     */
+    private static void normalizeLinuxParameters(List<ContainerDefinition> containerDefs) {
+        if (containerDefs == null) {
+            return;
+        }
+        for (ContainerDefinition def : containerDefs) {
+            Map<?, ?> parameters = linuxParameters(def);
+            if (parameters == null) {
+                continue;
+            }
+            Map<Object, Object> stored = new LinkedHashMap<>(parameters);
+            if (stored.get("maxSwap") == null) {
+                stored.remove("swappiness");
+            }
+            if (stored.get("capabilities") instanceof Map<?, ?> capabilities) {
+                Map<Object, Object> lists = new LinkedHashMap<>();
+                lists.put("add", capabilities.get("add") instanceof Collection<?> add ? add : List.of());
+                lists.put("drop", capabilities.get("drop") instanceof Collection<?> drop ? drop : List.of());
+                stored.put("capabilities", lists);
+            }
+            Map<String, Object> unparsed = new LinkedHashMap<>(def.getUnparsed());
+            unparsed.put("linuxParameters", stored);
+            def.setUnparsed(unparsed);
+        }
+    }
+
+    private static List<Map<?, ?>> entries(Object list) {
+        List<Map<?, ?>> entries = new ArrayList<>();
+        if (list instanceof Collection<?> items) {
+            for (Object item : items) {
+                if (item instanceof Map<?, ?> entry) {
+                    entries.add(entry);
+                }
+            }
+        }
+        return entries;
+    }
+
+    private static Map<?, ?> linuxParameters(ContainerDefinition def) {
+        Object linuxParameters = def.getUnparsed() == null ? null : def.getUnparsed().get("linuxParameters");
+        return linuxParameters instanceof Map<?, ?> parameters ? parameters : null;
+    }
+
+    private static List<String> capabilities(Map<?, ?> parameters, String list) {
+        if (!(parameters.get("capabilities") instanceof Map<?, ?> capabilities)
+                || !(capabilities.get(list) instanceof Collection<?> names)) {
+            return List.of();
+        }
+        List<String> out = new ArrayList<>();
+        for (Object name : names) {
+            out.add(String.valueOf(name));
+        }
+        return out;
     }
 
     /** A Fargate task cannot ask for a GPU; only {@code InferenceAccelerator} requirements remain. */
