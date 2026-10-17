@@ -12,6 +12,7 @@ import org.junit.jupiter.api.TestMethodOrder;
 import static io.restassured.RestAssured.given;
 import static org.hamcrest.Matchers.equalTo;
 import static org.hamcrest.Matchers.notNullValue;
+import static org.hamcrest.Matchers.nullValue;
 
 /**
  * End-to-end coverage for CORS preflight (OPTIONS) handling on deployed API Gateway
@@ -233,9 +234,9 @@ class ApiGatewayPreflightRoutingIntegrationTest {
                 .then()
                 .statusCode(204)
                 .header("Access-Control-Allow-Origin", equalTo(ORIGIN))
-                .header("Access-Control-Allow-Methods", equalTo("GET, POST"))
+                .header("Access-Control-Allow-Methods", equalTo("GET,POST"))
                 .header("Access-Control-Allow-Headers", equalTo("content-type"))
-                .header("Access-Control-Expose-Headers", equalTo("x-request-id"))
+                .header("Access-Control-Expose-Headers", nullValue())
                 .header("Access-Control-Max-Age", equalTo("600"))
                 .header("Access-Control-Allow-Credentials", equalTo("true"));
     }

@@ -650,6 +650,21 @@ curl http://{apiId}.execute-api.{region}.localhost.floci.io:4566/{stageName}/{pa
 APIs created or updated with `disableExecuteApiEndpoint` reject requests to
 this default hostname with `404 Not Found`, matching AWS HTTP API behavior.
 
+An API with a `corsConfiguration` applies it as AWS does (measured). It ignores the CORS headers an
+integration returns, and sets its own on whatever answers a route: the integration, or API Gateway
+itself refusing the request (a JWT or Lambda authorizer's `401` or `403`, an unsigned call to an
+`AWS_IAM` route's `403`) or failing it (a function that is gone answers `500` `Internal Server
+Error`). A request whose `Origin` is allowed gets `Access-Control-Allow-Origin`, and
+`Access-Control-Allow-Credentials` and `Access-Control-Expose-Headers` when configured, whatever its
+method. A preflight (an `OPTIONS` request with `Origin` and `Access-Control-Request-Method`) gets
+the origin, credentials, `Access-Control-Allow-Methods`, `Access-Control-Allow-Headers` and
+`Access-Control-Max-Age` instead, and only when the method and every header it asks for are allowed;
+otherwise no CORS header at all. A preflight a route matches (an `OPTIONS` or `ANY` route, or
+`$default`) goes through that route, so its authorizer and its integration answer it; one no route
+matches is answered `204` by API Gateway. Lists are joined with a bare comma, and no `Vary` is
+added. A path no route matches, or a route without a target, answers `404` with none of them. An API
+without a configuration leaves CORS to its integrations.
+
 Routes carrying `authorizationType: AWS_IAM`: including those an OpenAPI import resolves from an
 `awsSigv4` security scheme: require a signed caller; see
 [IAM Authorization](#iam-authorization).
