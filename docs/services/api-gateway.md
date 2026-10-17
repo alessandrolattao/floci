@@ -15,6 +15,12 @@ OIDC providers. The option permits private HTTPS targets and HTTP URLs that use 
 or loopback address. It does not permit public HTTP targets. Keep it disabled when Floci can
 receive untrusted API configuration.
 
+With TLS enabled, an issuer Floci serves itself, such as a Floci Cognito user pool, presents a
+certificate of Floci's local CA. The discovery document and JWKS are fetched trusting the same CA
+bundle Floci gives the containers it launches (see [TLS](../configuration/tls.md)), so a JWT
+authorizer on a Floci user pool verifies its tokens, as one on a Cognito user pool does on AWS. Its
+address is still a private one, so it also needs `FLOCI_SECURITY_ALLOW_PRIVATE_JWT_TARGETS=true`.
+
 ## Custom API IDs
 
 API IDs are generated randomly, which means endpoint URLs change every time you recreate an API. To pin
