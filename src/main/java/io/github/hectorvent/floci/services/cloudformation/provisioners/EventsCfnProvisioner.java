@@ -12,6 +12,7 @@ import io.github.hectorvent.floci.services.cloudformation.model.StackResource;
 import io.github.hectorvent.floci.services.eventbridge.EventBridgeService;
 import io.github.hectorvent.floci.services.eventbridge.model.ApiDestination;
 import io.github.hectorvent.floci.services.eventbridge.model.BatchParameters;
+import io.github.hectorvent.floci.services.eventbridge.model.EcsParameters;
 import io.github.hectorvent.floci.services.eventbridge.model.EventBus;
 import io.github.hectorvent.floci.services.eventbridge.model.HttpParameters;
 import io.github.hectorvent.floci.services.eventbridge.model.InputTransformer;
@@ -156,9 +157,13 @@ public class EventsCfnProvisioner implements CfnResourceProvisioner {
 
         // Provision inline targets
         List<Target> targets = new ArrayList<>();
-        if (props != null && props.has("Targets") && props.get("Targets").isArray()) {
-            for (JsonNode targetNode : props.get("Targets")) {
-                JsonNode resolved = ctx.engine().resolveNode(targetNode);
+        // Resolved once, so an Fn::If that chooses the whole list works, and with AWS::NoValue left
+        // out wherever it stands for a member, a list item or an Fn::If branch, as CloudFormation
+        // leaves them out of the PutTargets call, while a literal "" stays.
+        JsonNode targetNodes = props == null || !props.has("Targets") ? null
+                : ctx.engine().resolveNodeOmittingNoValue(props.get("Targets"));
+        if (targetNodes != null && targetNodes.isArray()) {
+            for (JsonNode resolved : targetNodes) {
                 String targetId = resolved.path("Id").asText(null);
                 String targetArn = resolved.path("Arn").asText(null);
                 String input = resolved.path("Input").asText(null);
@@ -192,6 +197,21 @@ public class EventsCfnProvisioner implements CfnResourceProvisioner {
                             batchParameters.setRetryStrategy(batchParamsNode.get("RetryStrategy"));
                         }
                         target.setBatchParameters(batchParameters);
+                    }
+                    target.setRoleArn(resolved.path("RoleArn").asText(null));
+                    JsonNode ecsParamsNode = resolved.path("EcsParameters");
+                    if (ecsParamsNode.isObject()) {
+                        target.setEcsParameters(MAPPER.convertValue(
+                                ecsParametersInApiShape(ecsParamsNode), EcsParameters.class));
+                    }
+                    JsonNode retryPolicyNode = resolved.path("RetryPolicy");
+                    if (retryPolicyNode.isObject()) {
+                        target.setRetryPolicy(MAPPER.convertValue(retryPolicyNode, Target.RetryPolicy.class));
+                    }
+                    JsonNode deadLetterConfigNode = resolved.path("DeadLetterConfig");
+                    if (deadLetterConfigNode.isObject()) {
+                        target.setDeadLetterConfig(
+                                MAPPER.convertValue(deadLetterConfigNode, Target.DeadLetterConfig.class));
                     }
                     targets.add(target);
                 }
@@ -829,6 +849,44 @@ public class EventsCfnProvisioner implements CfnResourceProvisioner {
         CfnDeletes.safeDelete("EventBridge API destination", name,
                 () -> eventBridgeService.deleteApiDestination(name, region),
                 "ResourceNotFoundException");
+    }
+
+    /**
+     * A template's {@code EcsParameters} in the shape PutTargets takes. The resource schema
+     * capitalizes members the EventBridge API spells in camel case ({@code AwsVpcConfiguration},
+     * the placement and capacity provider items) and names two lists differently
+     * ({@code PlacementStrategies}, {@code TagList}); the rest is the same.
+     */
+    private static ObjectNode ecsParametersInApiShape(JsonNode template) {
+        ObjectNode api = template.deepCopy();
+        rename(api, "PlacementStrategies", "PlacementStrategy");
+        rename(api, "TagList", "Tags");
+        if (api.get("NetworkConfiguration") instanceof ObjectNode network) {
+            rename(network, "AwsVpcConfiguration", "awsvpcConfiguration");
+        }
+        renameInItems(api.get("PlacementStrategy"), Map.of("Type", "type", "Field", "field"));
+        renameInItems(api.get("PlacementConstraints"), Map.of("Type", "type", "Expression", "expression"));
+        renameInItems(api.get("CapacityProviderStrategy"),
+                Map.of("CapacityProvider", "capacityProvider", "Weight", "weight", "Base", "base"));
+        return api;
+    }
+
+    private static void renameInItems(JsonNode items, Map<String, String> names) {
+        if (items == null || !items.isArray()) {
+            return;
+        }
+        for (JsonNode item : items) {
+            if (item instanceof ObjectNode object) {
+                names.forEach((from, to) -> rename(object, from, to));
+            }
+        }
+    }
+
+    private static void rename(ObjectNode node, String from, String to) {
+        JsonNode value = node.remove(from);
+        if (value != null) {
+            node.set(to, value);
+        }
     }
 
     /** Copied from the monolith: the shared original serves six other callers and stays there. */
