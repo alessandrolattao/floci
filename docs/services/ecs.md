@@ -70,7 +70,13 @@ such as `proxyConfiguration`, `ulimits`, `resourceRequirements`,
 `systemControls` and placement constraints, is kept verbatim and returned as registered. A client
 that reads back what it wrote (Terraform, or a deploy tool verifying its own
 `RegisterTaskDefinition`) sees no drift. `runtimePlatform` does not change where a local task
-runs: Floci launches every task on the host's own architecture.
+runs: Floci launches every task on the host's own architecture. An `AWS::ECS::TaskDefinition` in a
+CloudFormation template carries its containers' `LinuxParameters` into the same place, so they are
+returned in the API's shape and checked against the Fargate rules below exactly as if the task
+definition had been registered through the API. As CloudFormation's handler does, it sends the
+`devices` and `tmpfs` lists empty when the template has none, leaves out a list entry that
+`AWS::NoValue` stands for, and fails a `Tmpfs` mount without a `Size` with `Model validation failed
+(#/ContainerDefinitions/0/LinuxParameters/Tmpfs/0: required key [Size] not found)`.
 
 The round trip reaches inside the members Floci does parse. A port mapping keeps its `name`,
 `appProtocol` and `containerPortRange`, which is what a service's `serviceConnectConfiguration`

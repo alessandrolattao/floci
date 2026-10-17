@@ -327,10 +327,13 @@ public class EcsCfnProvisioner implements CfnResourceProvisioner {
         if (node == null || node.isNull()) {
             return result;
         }
-        JsonNode resolved = ctx.engine().resolveNode(node);
+        // AWS::NoValue leaves out what it stands for, a list entry included, as CloudFormation does
+        // (measured: Add [!If [False, SYS_PTRACE, !Ref AWS::NoValue]] registers an empty add list).
+        JsonNode resolved = ctx.engine().resolveNodeOmittingNoValue(node);
         if (resolved == null || !resolved.isArray()) {
             return result;
         }
+        int index = 0;
         for (JsonNode item : resolved) {
             ContainerDefinition def = new ContainerDefinition();
             def.setName(item.path("Name").asText(null));
@@ -350,6 +353,12 @@ public class EcsCfnProvisioner implements CfnResourceProvisioner {
             def.setSecrets(parseSecrets(item.path("Secrets")));
             def.setLogConfiguration(parseLogConfiguration(item.path("LogConfiguration")));
             def.setFirelensConfiguration(parseFirelensConfiguration(item.path("FirelensConfiguration")));
+            Map<String, Object> linuxParameters = parseLinuxParameters(item.path("LinuxParameters"), index++);
+            if (linuxParameters != null) {
+                Map<String, Object> unparsed = new LinkedHashMap<>();
+                unparsed.put("linuxParameters", linuxParameters);
+                def.setUnparsed(unparsed);
+            }
             if (item.path("Command").isArray()) {
                 def.setCommand(toStringList(item.path("Command")));
             }
@@ -368,6 +377,117 @@ public class EcsCfnProvisioner implements CfnResourceProvisioner {
         return new LogConfiguration(node.path("LogDriver").asText(),
                 parseOptions(node.path("Options")),
                 node.has("SecretOptions") ? parseSecrets(node.path("SecretOptions")) : null);
+    }
+
+    /**
+     * A container's {@code LinuxParameters} in the shape RegisterTaskDefinition takes them, and
+     * where that path keeps them: among the definition's unparsed members, under
+     * {@code linuxParameters}. So DescribeTaskDefinition shows them and the Fargate rules on them
+     * apply, the same as for a definition registered through the API. Only the members the
+     * template sets are written, and a value a Ref resolved to text is read as the boolean or
+     * number the template means; the devices and tmpfs lists are always sent, empty when the
+     * template has none, as CloudFormation's handler sends them (measured). A tmpfs mount without
+     * a Size fails the resource with the handler's model validation error.
+     */
+    private static Map<String, Object> parseLinuxParameters(JsonNode node, int containerIndex) {
+        if (node == null || !node.isObject()) {
+            return null;
+        }
+        Map<String, Object> result = new LinkedHashMap<>();
+        JsonNode capabilities = node.path("Capabilities");
+        if (capabilities.isObject()) {
+            Map<String, Object> kernelCapabilities = new LinkedHashMap<>();
+            putStringList(kernelCapabilities, "add", capabilities.path("Add"));
+            putStringList(kernelCapabilities, "drop", capabilities.path("Drop"));
+            result.put("capabilities", kernelCapabilities);
+        }
+        List<Map<String, Object>> devices = new ArrayList<>();
+        for (JsonNode item : node.path("Devices")) {
+            Map<String, Object> device = new LinkedHashMap<>();
+            putText(device, "hostPath", item.path("HostPath"));
+            putText(device, "containerPath", item.path("ContainerPath"));
+            putStringList(device, "permissions", item.path("Permissions"));
+            devices.add(device);
+        }
+        result.put("devices", devices);
+        putBoolean(result, "initProcessEnabled", "InitProcessEnabled", node.path("InitProcessEnabled"));
+        putInt(result, "maxSwap", "MaxSwap", node.path("MaxSwap"));
+        putInt(result, "sharedMemorySize", "SharedMemorySize", node.path("SharedMemorySize"));
+        putInt(result, "swappiness", "Swappiness", node.path("Swappiness"));
+        List<Map<String, Object>> mounts = new ArrayList<>();
+        int mountIndex = 0;
+        for (JsonNode item : node.path("Tmpfs")) {
+            if (!item.has("Size")) {
+                throw new AwsException("InvalidRequest", "Model validation failed (#/ContainerDefinitions/"
+                        + containerIndex + "/LinuxParameters/Tmpfs/" + mountIndex + ": required key [Size] not found)", 400);
+            }
+            Map<String, Object> mount = new LinkedHashMap<>();
+            putText(mount, "containerPath", item.path("ContainerPath"));
+            putStringList(mount, "mountOptions", item.path("MountOptions"));
+            putInt(mount, "size", "Size", item.path("Size"));
+            mounts.add(mount);
+            mountIndex++;
+        }
+        result.put("tmpfs", mounts);
+        return result;
+    }
+
+    private static void putText(Map<String, Object> target, String key, JsonNode value) {
+        if (value != null && !value.isMissingNode() && !value.isNull()) {
+            target.put(key, value.asText());
+        }
+    }
+
+    /**
+     * A boolean member, written only when the template sets one: empty text, what AWS::NoValue
+     * resolves to, leaves it out, and text other than true or false fails the resource.
+     */
+    private static void putBoolean(Map<String, Object> target, String key, String property, JsonNode value) {
+        if (value == null || value.isMissingNode() || value.isNull()) {
+            return;
+        }
+        if (value.isBoolean()) {
+            target.put(key, value.asBoolean());
+            return;
+        }
+        String text = value.asText().trim();
+        if (text.isEmpty()) {
+            return;
+        }
+        if (!"true".equalsIgnoreCase(text) && !"false".equalsIgnoreCase(text)) {
+            throw new AwsException("ValidationError", "Value of property " + property + " must be a boolean.", 400);
+        }
+        target.put(key, Boolean.parseBoolean(text));
+    }
+
+    /**
+     * An integer member, written only when the template sets one. An Fn::If that picks
+     * AWS::NoValue resolves to empty text and leaves it out; anything else has to be an integer,
+     * as for DesiredCount.
+     */
+    private static void putInt(Map<String, Object> target, String key, String property, JsonNode value) {
+        if (value == null || value.isMissingNode() || value.isNull()) {
+            return;
+        }
+        if (value.isIntegralNumber()) {
+            target.put(key, value.asInt());
+            return;
+        }
+        String text = value.asText().trim();
+        if (text.isEmpty()) {
+            return;
+        }
+        try {
+            target.put(key, Integer.parseInt(text));
+        } catch (NumberFormatException e) {
+            throw new AwsException("ValidationError", "Value of property " + property + " must be an integer.", 400);
+        }
+    }
+
+    private static void putStringList(Map<String, Object> target, String key, JsonNode value) {
+        if (value != null && value.isArray()) {
+            target.put(key, toStringList(value));
+        }
     }
 
     private static FirelensConfiguration parseFirelensConfiguration(JsonNode node) {
