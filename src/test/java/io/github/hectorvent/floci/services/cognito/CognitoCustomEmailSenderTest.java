@@ -117,7 +117,7 @@ class CognitoCustomEmailSenderTest {
     @Test
     void signUpHandsTheCodeToTheSenderAndTheCodeConfirmsTheUser() throws Exception {
         CognitoUser user = service.signUp(clientId, "ann@example.com", "Probe-Passw0rd!x",
-                Map.of("email", "ann@example.com"));
+                Map.of("email", "ann@example.com"), Map.of(), Map.of());
 
         JsonNode event = lastEvent();
         assertEquals("1", event.path("version").asText());
@@ -190,7 +190,7 @@ class CognitoCustomEmailSenderTest {
 
     @Test
     void resendAndForgotPasswordCodesGoToTheSenderAndWork() throws Exception {
-        service.signUp(clientId, "eve@example.com", "Probe-Passw0rd!x", Map.of("email", "eve@example.com"));
+        service.signUp(clientId, "eve@example.com", "Probe-Passw0rd!x", Map.of("email", "eve@example.com"), Map.of(), Map.of());
         service.resendConfirmationCode(clientId, "eve@example.com");
         JsonNode resend = lastEvent();
         assertEquals("CustomEmailSender_ResendCode", resend.path("triggerSource").asText());
@@ -209,7 +209,7 @@ class CognitoCustomEmailSenderTest {
 
     @Test
     void attributeCodesNameTheirSourceAndTheTokenClient() throws Exception {
-        service.signUp(clientId, "fay@example.com", "Probe-Passw0rd!x", Map.of("email", "fay@example.com"));
+        service.signUp(clientId, "fay@example.com", "Probe-Passw0rd!x", Map.of("email", "fay@example.com"), Map.of(), Map.of());
         service.confirmSignUp(clientId, "fay@example.com", open(lastEvent().path("request").path("code").asText()));
         @SuppressWarnings("unchecked")
         Map<String, Object> tokens = (Map<String, Object>) service.initiateAuth(clientId, "USER_PASSWORD_AUTH",
@@ -283,7 +283,7 @@ class CognitoCustomEmailSenderTest {
         kmsService.disableKey(keyArn, REGION);
 
         AwsException signUp = assertThrows(AwsException.class, () -> service.signUp(clientId, "hal@example.com",
-                "Probe-Passw0rd!x", Map.of("email", "hal@example.com")));
+                "Probe-Passw0rd!x", Map.of("email", "hal@example.com"), Map.of(), Map.of()));
         assertEquals("CodeDeliveryFailureException", signUp.getErrorCode());
         assertEquals("Caller needs to enable the configured KMS Key", signUp.getMessage());
         assertEquals("UNCONFIRMED", service.adminGetUser(pool.getId(), "hal@example.com").getUserStatus());
@@ -301,7 +301,7 @@ class CognitoCustomEmailSenderTest {
         kmsService.scheduleKeyDeletion(keyArn, 7, REGION);
 
         AwsException signUp = assertThrows(AwsException.class, () -> service.signUp(clientId, "ida@example.com",
-                "Probe-Passw0rd!x", Map.of("email", "ida@example.com")));
+                "Probe-Passw0rd!x", Map.of("email", "ida@example.com"), Map.of(), Map.of()));
         assertEquals("CodeDeliveryFailureException", signUp.getErrorCode());
         assertEquals("Unable to encrypt CustomEmailSender/CustomSMSSender code using the configured KMS Key",
                 signUp.getMessage());
@@ -314,7 +314,7 @@ class CognitoCustomEmailSenderTest {
                 .thenThrow(new AwsException("ResourceNotFoundException", "Function not found: " + SENDER_ARN, 404));
 
         AwsException signUp = assertThrows(AwsException.class, () -> service.signUp(clientId, "jon@example.com",
-                "Probe-Passw0rd!x", Map.of("email", "jon@example.com")));
+                "Probe-Passw0rd!x", Map.of("email", "jon@example.com"), Map.of(), Map.of()));
         assertEquals("UnexpectedLambdaException", signUp.getErrorCode());
         assertEquals("CustomEmailSender invocation failed due to error AccessDeniedException.", signUp.getMessage());
     }
@@ -322,7 +322,7 @@ class CognitoCustomEmailSenderTest {
     /** Measured: an email change whose code cannot be sent is applied, and the request fails. */
     @Test
     void anAttributeUpdateIsAppliedWhenItsCodeCannotBeSent() throws Exception {
-        service.signUp(clientId, "kim@example.com", "Probe-Passw0rd!x", Map.of("email", "kim@example.com"));
+        service.signUp(clientId, "kim@example.com", "Probe-Passw0rd!x", Map.of("email", "kim@example.com"), Map.of(), Map.of());
         service.confirmSignUp(clientId, "kim@example.com", open(lastEvent().path("request").path("code").asText()));
         @SuppressWarnings("unchecked")
         Map<String, Object> tokens = (Map<String, Object>) service.initiateAuth(clientId, "USER_PASSWORD_AUTH",
