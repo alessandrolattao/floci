@@ -223,6 +223,10 @@ floci:
       enabled: true
       transaction-ttl-seconds: 180
       database-resuming-exception-enabled: false
+    dsql:
+      enabled: true
+      mock: true
+      port: 0
     redshift-data:
       enabled: true
       result-ttl-hours: 24

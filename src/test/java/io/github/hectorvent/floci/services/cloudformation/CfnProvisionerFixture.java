@@ -48,6 +48,7 @@ import io.github.hectorvent.floci.services.cloudformation.provisioners.CognitoUs
 import io.github.hectorvent.floci.services.cloudformation.provisioners.CognitoUserPoolUserToGroupAttachmentCfnProvisioner;
 import io.github.hectorvent.floci.services.cloudformation.provisioners.ConfigCfnProvisioner;
 import io.github.hectorvent.floci.services.cloudformation.provisioners.CustomResourceCfnProvisioner;
+import io.github.hectorvent.floci.services.cloudformation.provisioners.DsqlCfnProvisioner;
 import io.github.hectorvent.floci.services.cloudformation.provisioners.DynamoDbCfnProvisioner;
 import io.github.hectorvent.floci.services.cloudformation.provisioners.Ec2FlowLogCfnProvisioner;
 import io.github.hectorvent.floci.services.cloudformation.provisioners.Ec2InstanceCfnProvisioner;
@@ -119,6 +120,7 @@ import io.github.hectorvent.floci.services.cloudwatch.metrics.CloudWatchMetricsS
 import io.github.hectorvent.floci.services.cognito.CognitoService;
 import io.github.hectorvent.floci.services.configservice.AwsConfigService;
 import io.github.hectorvent.floci.services.docdb.DocDbService;
+import io.github.hectorvent.floci.services.dsql.DsqlService;
 import io.github.hectorvent.floci.services.dynamodb.DynamoDbFacade;
 import io.github.hectorvent.floci.services.dynamodb.DynamoDbService;
 import io.github.hectorvent.floci.services.dynamodb.backend.NativeDynamoDbBackend;
@@ -245,6 +247,7 @@ final class CfnProvisionerFixture {
         private AwsConfigService awsConfigService;
         private OrganizationsService organizationsService;
         private SqsService sqsService;
+        private DsqlService dsqlService;
         private WafV2Service wafV2Service;
         private BackupService backupService;
         private ElastiCacheService elastiCacheService;
@@ -434,6 +437,9 @@ final class CfnProvisionerFixture {
             }
             if (organizationsService != null) {
                 discovered.add(new OrganizationsCfnProvisioner(organizationsService));
+            }
+            if (dsqlService != null) {
+                discovered.add(new DsqlCfnProvisioner(dsqlService));
             }
             if (sqsService != null) {
                 discovered.add(new SqsCfnProvisioner(sqsService));
@@ -760,6 +766,11 @@ final class CfnProvisionerFixture {
 
         public Builder organizations(OrganizationsService v) {
             this.organizationsService = v;
+            return this;
+        }
+
+        public Builder dsql(DsqlService v) {
+            this.dsqlService = v;
             return this;
         }
 

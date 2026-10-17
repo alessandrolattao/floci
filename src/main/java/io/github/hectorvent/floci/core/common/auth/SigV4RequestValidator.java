@@ -9,6 +9,7 @@ import javax.crypto.spec.SecretKeySpec;
 import java.net.URLDecoder;
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
+import java.time.Duration;
 import java.time.Instant;
 import java.time.ZoneOffset;
 import java.time.format.DateTimeFormatter;
@@ -88,6 +89,21 @@ public final class SigV4RequestValidator {
     public boolean validate(String rawQuery, String canonicalHostHeaderValue, String identityParamName,
                              boolean identityRequired, String expectedIdentityValue, String logLabel,
                              String ownerAccountId) {
+        return validate(rawQuery, canonicalHostHeaderValue, "connect", identityParamName, identityRequired,
+                expectedIdentityValue, logLabel, ownerAccountId, Duration.ZERO);
+    }
+
+    /**
+     * As above, for a token whose {@code Action} is not {@code connect} and whose service accepts
+     * it for a while after it expires: Aurora DSQL signs {@code DbConnect} and
+     * {@code DbConnectAdmin}, and takes a token up to 5 seconds past its expiry.
+     *
+     * @param expectedAction the {@code Action} the token must carry
+     * @param expiryGrace how long after its expiry the token is still accepted
+     */
+    public boolean validate(String rawQuery, String canonicalHostHeaderValue, String expectedAction,
+                             String identityParamName, boolean identityRequired, String expectedIdentityValue,
+                             String logLabel, String ownerAccountId, Duration expiryGrace) {
         try {
             List<QueryParameter> parameters = decodeQuery(rawQuery);
             String action = findParam(parameters, "Action");
@@ -98,7 +114,7 @@ public final class SigV4RequestValidator {
             String signedHeaders = findParam(parameters, "X-Amz-SignedHeaders");
             String signature = findParam(parameters, "X-Amz-Signature");
 
-            if (!"connect".equals(action) || (identityRequired && identity == null) || dateTime == null
+            if (!expectedAction.equals(action) || (identityRequired && identity == null) || dateTime == null
                     || expires == null || credential == null || signedHeaders == null || signature == null) {
                 LOG.debugv("{0} missing required SigV4 parameters", logLabel);
                 return false;
@@ -112,7 +128,7 @@ public final class SigV4RequestValidator {
 
             Instant tokenTime = Instant.from(DATETIME_FMT.parse(dateTime));
             int expirySeconds = Integer.parseInt(expires);
-            if (Instant.now().isAfter(tokenTime.plusSeconds(expirySeconds))) {
+            if (Instant.now().minus(expiryGrace).isAfter(tokenTime.plusSeconds(expirySeconds))) {
                 LOG.debugv("{0} expired", logLabel);
                 return false;
             }

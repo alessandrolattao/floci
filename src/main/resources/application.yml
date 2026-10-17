@@ -524,6 +524,12 @@ floci:
       enabled: true
       transaction-ttl-seconds: 180
       database-resuming-exception-enabled: false # FLOCI_SERVICES_RDS_DATA_DATABASE_RESUMING_EXCEPTION_ENABLED
+    dsql:
+      enabled: true
+      mock: false                                 # FLOCI_SERVICES_DSQL_MOCK; true = clusters without a database, no Docker
+      port: 5432                                  # FLOCI_SERVICES_DSQL_PORT; the port every cluster endpoint is served on
+      endpoint-suffix: localhost.floci.io         # FLOCI_SERVICES_DSQL_ENDPOINT_SUFFIX; endpoints are <id>.dsql.<region>.<suffix>
+      image: "postgres:16-alpine"                 # FLOCI_SERVICES_DSQL_IMAGE
     redshift-data:
       enabled: true
       result-ttl-hours: 24
