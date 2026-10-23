@@ -107,9 +107,9 @@ public class ResourceArnBuilder {
     }
 
     /**
-     * The resources a request is checked against. Scheduler and Pipes ARNs are minted in {@code partition},
-     * the request's, as those services mint theirs, so a Region no partition publishes gets the deployment's
-     * partition rather than {@code aws}.
+     * The resources a request is checked against. Scheduler, Pipes and DSQL ARNs are minted in
+     * {@code partition}, the request's, as those services mint theirs, so a Region no partition publishes gets
+     * the deployment's partition rather than {@code aws}.
      */
     public List<String> buildResources(String credentialScope, ContainerRequestContext ctx,
                                        String region, String accountId, String partition) {
@@ -130,6 +130,7 @@ public class ResourceArnBuilder {
             case "resource-groups" -> List.of(buildResourceGroupArn(ctx, region, accountId));
             case "scheduler"      -> List.of(buildSchedulerArn(path, ctx, region, accountId, partition));
             case "pipes"          -> List.of(buildPipesArn(path, ctx, region, accountId, partition));
+            case "dsql"           -> List.of(buildDsqlArn(path, ctx, region, accountId, partition));
             default               -> List.of("*");
         };
     }
@@ -980,6 +981,29 @@ public class ResourceArnBuilder {
         if (scheduleGroup != null) {
             return new AwsArnUtils.Arn(partition, "scheduler", region, accountId,
                     "schedule-group/" + scheduleGroup).toString();
+        }
+        return taggedResource(ctx);
+    }
+
+    /**
+     * The resource of an Aurora DSQL route, as the Service Authorization Reference names it: the cluster
+     * a cluster route names, the stream a stream route names (its cluster, to create or list streams), or
+     * the ARN a tagging route names. CreateCluster and ListClusters are checked against
+     * {@code cluster/*}, as DSQL checks them (measured).
+     */
+    private String buildDsqlArn(String path, ContainerRequestContext ctx, String region, String accountId,
+                                String partition) {
+        String cluster = "/cluster".equals(path) ? "*" : segmentAfterPrefix(path, "/cluster/");
+        if (cluster == null) {
+            cluster = segmentAfterPrefix(path, "/clusters/");
+        }
+        String streamCluster = segmentAfterPrefix(path, "/stream/");
+        if (streamCluster != null) {
+            String stream = segmentAfterPrefix(path, "/stream/" + streamCluster + "/");
+            cluster = stream == null ? streamCluster : streamCluster + "/stream/" + stream;
+        }
+        if (cluster != null) {
+            return new AwsArnUtils.Arn(partition, "dsql", region, accountId, "cluster/" + cluster).toString();
         }
         return taggedResource(ctx);
     }

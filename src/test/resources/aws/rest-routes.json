@@ -240,6 +240,28 @@
         "UpdateVpcLink": {"method": "PATCH", "requestUri": "/v2/vpclinks/{vpcLinkId}"}
       }
     },
+    "dsql": {
+      "credentialScope": "dsql",
+      "apiVersion": "2018-05-10",
+      "operations": {
+        "CreateCluster": {"method": "POST", "requestUri": "/cluster"},
+        "CreateStream": {"method": "POST", "requestUri": "/stream/{clusterIdentifier}"},
+        "DeleteCluster": {"method": "DELETE", "requestUri": "/cluster/{identifier}"},
+        "DeleteClusterPolicy": {"method": "DELETE", "requestUri": "/cluster/{identifier}/policy"},
+        "DeleteStream": {"method": "DELETE", "requestUri": "/stream/{clusterIdentifier}/{streamIdentifier}"},
+        "GetCluster": {"method": "GET", "requestUri": "/cluster/{identifier}"},
+        "GetClusterPolicy": {"method": "GET", "requestUri": "/cluster/{identifier}/policy"},
+        "GetStream": {"method": "GET", "requestUri": "/stream/{clusterIdentifier}/{streamIdentifier}"},
+        "GetVpcEndpointServiceName": {"method": "GET", "requestUri": "/clusters/{identifier}/vpc-endpoint-service-name"},
+        "ListClusters": {"method": "GET", "requestUri": "/cluster"},
+        "ListStreams": {"method": "GET", "requestUri": "/stream/{clusterIdentifier}"},
+        "ListTagsForResource": {"method": "GET", "requestUri": "/tags/{resourceArn}"},
+        "PutClusterPolicy": {"method": "POST", "requestUri": "/cluster/{identifier}/policy"},
+        "TagResource": {"method": "POST", "requestUri": "/tags/{resourceArn}"},
+        "UntagResource": {"method": "DELETE", "requestUri": "/tags/{resourceArn}"},
+        "UpdateCluster": {"method": "POST", "requestUri": "/cluster/{identifier}"}
+      }
+    },
     "lambda": {
       "credentialScope": "lambda",
       "apiVersion": "2015-03-31",

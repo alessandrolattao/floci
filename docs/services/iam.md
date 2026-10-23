@@ -1339,7 +1339,7 @@ as, and its path is matched still percent-encoded, as the router matches it, so 
 inside a parameter cannot make the route's rule miss.
 
 The REST routes mapped to an action are those of S3, Lambda, API Gateway, SES v2, RDS Data,
-Kinesis, EventBridge Scheduler and EventBridge Pipes. In Lambda that is every route of the function
+Kinesis, EventBridge Scheduler, EventBridge Pipes and Aurora DSQL. In Lambda that is every route of the function
 API, MicroVMs and network connectors, including those Floci does not serve yet, and the Web
 Functions routes, each checked as the action of its own name except `InvokeWithResponseStream`
 (checked as `lambda:InvokeFunction`) and `GetLayerVersionByArn` (`lambda:GetLayerVersion`). AWS also
@@ -1353,7 +1353,9 @@ names, are not served.
 
 A Scheduler request is checked against `schedule/<group>/<name>`, the group from the body's
 `GroupName` on a create or an update, from `groupName` otherwise, and `default` when neither names
-one, or `schedule-group/<name>`. A Pipes request is checked against `pipe/<name>`. A MicroVM image
+one, or `schedule-group/<name>`. A Pipes request is checked against `pipe/<name>`. A DSQL request
+is checked against `cluster/<id>`, `cluster/<id>/stream/<id>` for a stream, or the ARN a tagging
+route names; `CreateCluster` and `ListClusters` against `cluster/*`, as DSQL checks them. A MicroVM image
 or network connector request is checked against `microvm-image:<name>` or `network-connector:<id>`
 in the request's account and Region, an identifier given as an ARN taken for its name, as the
 service looks it up. `RunMicrovm` is checked against the image its `imageIdentifier` names, an
@@ -1555,6 +1557,7 @@ When `FLOCI_SERVICES_IAM_ENFORCEMENT_ENABLED` is active, Floci also queries regi
 - For detailed S3 bucket policy behavior and configuration, see [S3 Bucket Policy Enforcement](s3.md#bucket-policy-enforcement).
 - Lambda function policies, the statements `AddPermission` adds, take part the same way. An invoke of another account's function by ARN runs it in that account, so its function policy has to allow the caller as well; see [Function policies under IAM enforcement](lambda.md#function-policies-under-iam-enforcement).
 - SNS topic policies take part the same way for a request that names the topic in a JSON-protocol body; a topic with no policy set has the default one AWS gives a new topic. See [SNS](sns.md).
+- Aurora DSQL cluster policies take part the same way for a control plane call on the cluster, and when a client connects to the cluster's endpoint. See [DSQL](dsql.md#authentication).
 - SQS queue and API Gateway REST API policies are stored but not evaluated.
 - A call an AWS service makes to another service's resource on its own behalf, such as SES publishing an event or a notification to an SNS topic, has no IAM principal, so the target's resource policy decides it alone and has to allow the calling service, through `{"Service": "<service>.amazonaws.com"}` or `{"AWS": "*"}`. A target with no policy refuses it. Its request context holds `aws:PrincipalIsAWSService` (`true`), `aws:PrincipalServiceName` and `aws:PrincipalServiceNamesList`, `aws:SourceArn` and `aws:SourceAccount` for the resource whose configuration triggered the call, `aws:ResourceAccount` and `aws:RequestedRegion`, and none of the keys that describe an IAM principal. A publish to an SNS topic from SES also carries `aws:SourceOwner`, the key the SNS Developer Guide lists SES among the services setting, which is what the default topic policy checks, so that policy admits SES acting for the topic owner's account and no other. SES is the one service checked this way so far; see [SES IAM enforcement](ses.md#iam-enforcement).
 

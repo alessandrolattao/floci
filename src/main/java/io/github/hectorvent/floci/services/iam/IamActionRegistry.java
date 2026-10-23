@@ -256,6 +256,25 @@ public class IamActionRegistry {
         rule("scheduler", "POST",   "^/tags(/.+)?$",            "scheduler:TagResource"),
         rule("scheduler", "DELETE", "^/tags(/.+)?$",            "scheduler:UntagResource"),
 
+        // ── Aurora DSQL ────────────────────────────────────────────────────────
+        rule("dsql", "POST",   "^/cluster$",                                  "dsql:CreateCluster"),
+        rule("dsql", "GET",    "^/cluster$",                                  "dsql:ListClusters"),
+        rule("dsql", "GET",    "^/cluster/[^/]+$",                            "dsql:GetCluster"),
+        rule("dsql", "POST",   "^/cluster/[^/]+$",                            "dsql:UpdateCluster"),
+        rule("dsql", "DELETE", "^/cluster/[^/]+$",                            "dsql:DeleteCluster"),
+        rule("dsql", "POST",   "^/cluster/[^/]+/policy$",                     "dsql:PutClusterPolicy"),
+        rule("dsql", "GET",    "^/cluster/[^/]+/policy$",                     "dsql:GetClusterPolicy"),
+        rule("dsql", "DELETE", "^/cluster/[^/]+/policy$",                     "dsql:DeleteClusterPolicy"),
+        rule("dsql", "GET",    "^/clusters/[^/]+/vpc-endpoint-service-name$", "dsql:GetVpcEndpointServiceName"),
+        rule("dsql", "POST",   "^/stream/[^/]+$",                             "dsql:CreateStream"),
+        rule("dsql", "GET",    "^/stream/[^/]+$",                             "dsql:ListStreams"),
+        rule("dsql", "GET",    "^/stream/[^/]+/[^/]+$",                       "dsql:GetStream"),
+        rule("dsql", "DELETE", "^/stream/[^/]+/[^/]+$",                       "dsql:DeleteStream"),
+        // Tagging is served at /tags/<arn> and at /tags, naming the ARN in the query or the body.
+        rule("dsql", "GET",    "^/tags(/.+)?$",                               "dsql:ListTagsForResource"),
+        rule("dsql", "POST",   "^/tags(/.+)?$",                               "dsql:TagResource"),
+        rule("dsql", "DELETE", "^/tags(/.+)?$",                               "dsql:UntagResource"),
+
         // ── EventBridge Pipes ──────────────────────────────────────────────────
         rule("pipes", "POST",   "^/v1/pipes/[^/]+/start$", "pipes:StartPipe"),
         rule("pipes", "POST",   "^/v1/pipes/[^/]+/stop$",  "pipes:StopPipe"),

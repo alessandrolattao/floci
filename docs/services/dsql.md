@@ -190,8 +190,10 @@ it with DSQL's messages:
 The policy is kept and returned in DSQL's form: pretty-printed, its elements in DSQL's order, a
 list of one value written as that value, condition values as text, an account id as its root ARN,
 and `2008-10-17` when it has no `Version`. A policy's version is the time it was set, in epoch
-milliseconds. With IAM enforcement on, a connection is checked against the cluster's policy (see
-[Authentication](#authentication)); control plane calls are not.
+milliseconds. With IAM enforcement on, the cluster's policy is evaluated for every control plane
+call on the cluster, as DSQL evaluates it, and when a client connects (see
+[Authentication](#authentication)). Each control plane call is checked against the cluster it names,
+and `CreateCluster` and `ListClusters` against `cluster/*`.
 
 ## CloudFormation
 

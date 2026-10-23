@@ -67,6 +67,10 @@ public final class DsqlClusterFixture {
         return host;
     }
 
+    public String identifier() {
+        return identifier;
+    }
+
     public String arn() {
         return "arn:aws:dsql:" + REGION + ":" + ACCOUNT + ":cluster/" + identifier;
     }

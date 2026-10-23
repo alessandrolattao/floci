@@ -1516,7 +1516,7 @@ public class IamEnforcementFilter implements ContainerRequestFilter {
         if ("secretsmanager".equals(credentialScope)) {
             return arnBuilder.buildSecretsManagerResources(action, ctx, region, accountId, requestPartition());
         }
-        if ("scheduler".equals(credentialScope) || "pipes".equals(credentialScope)) {
+        if ("scheduler".equals(credentialScope) || "pipes".equals(credentialScope) || "dsql".equals(credentialScope)) {
             return arnBuilder.buildResources(credentialScope, ctx, region, accountId, requestPartition());
         }
         return arnBuilder.buildResources(credentialScope, ctx, region, accountId);

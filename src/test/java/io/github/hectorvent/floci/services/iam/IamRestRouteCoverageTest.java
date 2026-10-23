@@ -53,7 +53,7 @@ class IamRestRouteCoverageTest {
 
     /** Models every operation of which is checked: the services whose routes the registry maps in full. */
     private static final Set<String> FULLY_ROUTED_MODELS =
-            Set.of("scheduler", "pipes", "lambda", "lambda-microvms", "lambda-core");
+            Set.of("scheduler", "pipes", "lambda", "lambda-microvms", "lambda-core", "dsql");
 
     private final IamActionRegistry registry = new IamActionRegistry();
 

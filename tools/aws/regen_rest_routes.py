@@ -34,6 +34,7 @@ OUTPUT = REPO_ROOT / "src/test/resources/aws/rest-routes.json"
 MODELS: dict[str, str] = {
     "apigateway": "apigateway",
     "apigatewayv2": "apigateway",
+    "dsql": "dsql",
     "lambda": "lambda",
     "lambda-core": "lambda",
     "lambda-microvms": "lambda",
