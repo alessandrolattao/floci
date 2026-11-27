@@ -31,7 +31,8 @@ fork and `upstream` is floci-io/floci, with `gh` logged in:
 4. recreates the branch `integration` from `main`: it never merges `main` into an earlier
    integration
 5. merges, in pull request number order, the head of every open pull request labelled
-   `integration`, one merge commit each
+   `integration`, one merge commit each. A head that `main` or a lower-numbered pending fix
+   already contains has nothing to merge, and the round leaves it out
 6. runs the whole test suite on the result, in CI's four shards, through `local-tools/shards.sh`
    (a script of the clone, outside the repository)
 7. tags the result `int-<commit>`, the commit's hash cut to 12 characters, pushes `integration`

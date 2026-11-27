@@ -50,6 +50,18 @@ skips_push() {
     grep -qE '\[(skip ci|ci skip|no ci|skip actions|actions skip)\]|^skip-checks: ?true$' <<<"$message"
 }
 
+# contained <commit> <ref>...: succeeds when one of <ref> already contains <commit>.
+contained() {
+    local commit=$1 ref
+    shift
+    for ref in "$@"; do
+        if git merge-base --is-ancestor "$commit" "$ref"; then
+            return 0
+        fi
+    done
+    return 1
+}
+
 # merges_now <ref> <main> <head>...: succeeds when <ref> is <main> with each <head> merged on top
 # of it, in order, one merge commit each, as this round would build it.
 merges_now() {
@@ -84,16 +96,25 @@ round() {
     git push origin main
     disable_upstream_workflows
 
-    local listed entries entry numbers=() heads=() i
+    # A head that main or a lower-numbered pending fix already contains gives no merge commit: it
+    # is left out, so the integration a round builds and the one it compares with stay the same.
+    local listed entries entry number head listed_heads=() numbers=() heads=() i
     listed=$(gh pr list --repo "$FORK" --base main --label "$LABEL" --state open --limit 100 \
         --json number,headRefOid --jq 'sort_by(.number) | .[] | "\(.number) \(.headRefOid)"')
     mapfile -t entries <<<"$listed"
     for entry in "${entries[@]}"; do
         [ -n "$entry" ] || continue
-        numbers+=("${entry% *}")
-        heads+=("${entry#* }")
-        git fetch origin "refs/pull/${entry% *}/head"
-        [ "$(git rev-parse FETCH_HEAD)" = "${entry#* }" ] || die "#${entry% *} moved while the round read it: run it again"
+        number=${entry% *}
+        head=${entry#* }
+        git fetch origin "refs/pull/$number/head"
+        [ "$(git rev-parse FETCH_HEAD)" = "$head" ] || die "#$number moved while the round read it: run it again"
+        if contained "$head" main "${listed_heads[@]}"; then
+            echo "round: #$number ($head) is already in main or an earlier pending fix: nothing to merge"
+        else
+            numbers+=("$number")
+            heads+=("$head")
+        fi
+        listed_heads+=("$head")
     done
 
     if merges_now "refs/remotes/origin/$LABEL" main "${heads[@]}"; then
