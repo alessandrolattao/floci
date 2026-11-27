@@ -42,6 +42,14 @@ disable_upstream_workflows() {
     done <<<"$listed"
 }
 
+# skips_push <commit>: succeeds when <commit>'s message carries one of the strings GitHub's
+# "Skipping workflow runs" lists, which keep a push from starting workflows, a tag's push included.
+skips_push() {
+    local message
+    message=$(git log -1 --format=%B "$1")
+    grep -qE '\[(skip ci|ci skip|no ci|skip actions|actions skip)\]|^skip-checks: ?true$' <<<"$message"
+}
+
 # merges_now <ref> <main> <head>...: succeeds when <ref> is <main> with each <head> merged on top
 # of it, in order, one merge commit each, as this round would build it.
 merges_now() {
@@ -126,6 +134,11 @@ round() {
 
     git push --force-with-lease="refs/heads/$LABEL:$lease" origin "$LABEL"
     git push origin "refs/tags/$tag"
+    if skips_push "$commit"; then
+        gh workflow run integration-image.yml --repo "$FORK" --ref "$tag" ||
+            die "$tag is pushed but its image did not start: gh workflow run integration-image.yml --repo $FORK --ref $tag"
+        echo "round: $commit carries [skip ci], which skips the tag's push: image started with a dispatch"
+    fi
     echo "round: $tag"
 }
 

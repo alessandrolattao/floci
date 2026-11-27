@@ -12,6 +12,9 @@ on:
   push:
     tags:
       - 'int-*'
+  # A tag on a commit that carries [skip ci] starts nothing when it is pushed: fork/round.sh then
+  # dispatches this workflow on the tag. A dispatch on any other ref publishes nothing.
+  workflow_dispatch:
 
 permissions:
   contents: read
@@ -23,6 +26,7 @@ env:
 jobs:
   published:
     name: Is the tag published
+    if: startsWith(github.ref, 'refs/tags/int-')
     runs-on: ubuntu-latest
     timeout-minutes: 10
     outputs:

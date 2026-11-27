@@ -34,7 +34,10 @@ fork and `upstream` is floci-io/floci, with `gh` logged in:
    `integration`, one merge commit each
 6. runs the whole test suite on the result, in CI's four shards, through `local-tools/shards.sh`
    (a script of the clone, outside the repository)
-7. tags the result `int-<short commit>`, pushes `integration` with a lease and pushes the tag
+7. tags the result `int-<short commit>`, pushes `integration` with a lease and pushes the tag.
+   When the tagged commit is the round's `[skip ci]` merge (no pull request is pending), the
+   tag's push starts nothing either, so the round starts the image with
+   `gh workflow run integration-image.yml --ref <tag>`
 
 A merge conflict or a red suite stops the round before `integration` or the tag is pushed.
 Commits, merges and tags are signed with the SSH key at `~/.ssh/id_ed25519.pub`. The suite binds
@@ -48,7 +51,7 @@ the suite.
 
 ## The image
 
-Pushing an `int-*` tag runs `integration-image.yml`, which publishes
+Pushing an `int-*` tag, or dispatching it on one, runs `integration-image.yml`, which publishes
 `ghcr.io/alessandrolattao/floci:<tag>` for `linux/amd64` and `linux/arm64`. The image is the JVM
 image of `docker/Dockerfile.jvm-package`, built from the tagged commit, and it carries:
 
