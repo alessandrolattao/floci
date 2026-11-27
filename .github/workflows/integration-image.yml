@@ -1,0 +1,92 @@
+name: Integration image
+
+# Fork-only: never sent to floci-io/floci (see FORK.md). Publishes
+# ghcr.io/alessandrolattao/floci:<tag> from the commit an int-* tag names, for linux/amd64 and
+# linux/arm64. A tag already published is left alone: it names one commit, and what a commit
+# builds does not change, so a pin on an older round keeps working.
+#
+# The package is linked to alessandrolattao/scopeout.run; this repository writes to it through the
+# package's "Manage Actions access" (Write role).
+
+on:
+  push:
+    tags:
+      - 'int-*'
+
+permissions:
+  contents: read
+  packages: write
+
+env:
+  IMAGE: ghcr.io/alessandrolattao/floci:${{ github.ref_name }}
+
+jobs:
+  published:
+    name: Is the tag published
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    outputs:
+      missing: ${{ steps.published.outputs.missing }}
+    steps:
+      - uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ github.token }}
+
+      - name: Look the tag up
+        id: published
+        run: |
+          if docker buildx imagetools inspect "$IMAGE" >/dev/null 2>&1; then
+            echo "$IMAGE is already published"
+            echo "missing=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "missing=true" >> "$GITHUB_OUTPUT"
+          fi
+
+  floci:
+    name: Floci
+    needs: published
+    if: needs.published.outputs.missing == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-java@de7274f081f381c8f8158605e0321c36c376e2e6 # v6.0.1
+        with:
+          java-version: '25'
+          distribution: 'temurin'
+
+      # The jar is built once, natively. docker/Dockerfile.jvm-package wraps it in the runtime
+      # stage of the canonical docker/Dockerfile (DockerfileRuntimeParityTest keeps the two
+      # identical), so arm64 emulates only that stage instead of a whole Maven build.
+      - name: Build Floci
+        run: ./mvnw -B -q package -DskipTests
+
+      - uses: docker/setup-qemu-action@99012661954931238ded8c8b007157a8430204e1 # v4.4.0
+
+      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+
+      - uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ github.token }}
+
+      - name: Build and publish the image
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+        with:
+          context: .
+          file: docker/Dockerfile.jvm-package
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: ${{ env.IMAGE }}
+          build-args: |
+            VERSION=${{ env.IMAGE }}
+          labels: |
+            org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
+            org.opencontainers.image.url=${{ github.server_url }}/${{ github.repository }}/tree/${{ github.sha }}
+            org.opencontainers.image.revision=${{ github.sha }}
