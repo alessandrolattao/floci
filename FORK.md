@@ -30,8 +30,8 @@ charged with upstream's later changes; uncommitted changes are not checked. Chec
    started using after the branch's merge base (a caller the branch leaves in place is in `HEAD`,
    where `./mvnw test-compile` reports it)
 2. on a line the branch adds, an `if`, `else`, `for`, `while` or `do` without braces, an empty
-   `catch` whose variable is neither `ignored` nor `expected`, or a `catch` of `Exception`,
-   `RuntimeException`, `Throwable` or `Error`
+   `catch`, with a comment or without, whose variable is neither `ignored` nor `expected`, or a
+   `catch` of `Exception`, `RuntimeException`, `Throwable` or `Error`
 3. on a line the branch adds, `Thread.sleep`, `Instant.now()` or `System.currentTimeMillis`
 
 It prints, without failing:

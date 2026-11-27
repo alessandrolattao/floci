@@ -240,6 +240,8 @@ check_checkstyle() {
     java=${JAVA_HOME:+$JAVA_HOME/bin/}java
     command -v "$java" >/dev/null || die "no Java at $java: set JAVA_HOME to a JDK, or unset it to use the one on PATH"
     jar=$(checkstyle_jar)
+    # Only the variable's name excuses an empty catch: commentFormat (?!) matches no comment, where
+    # its default .* would let any comment through.
     cat >"$work/checkstyle.xml" <<'EOF'
 <?xml version="1.0"?>
 <!DOCTYPE module PUBLIC
@@ -250,7 +252,8 @@ check_checkstyle() {
     <module name="TreeWalker">
         <module name="NeedBraces"/>
         <module name="EmptyCatchBlock">
-            <property name="exceptionVariableName" value="ignored|expected"/>
+            <property name="exceptionVariableName" value="^(ignored|expected)$"/>
+            <property name="commentFormat" value="(?!)"/>
         </module>
         <module name="IllegalCatch"/>
     </module>
