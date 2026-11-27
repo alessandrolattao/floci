@@ -21,8 +21,9 @@ die() {
 }
 
 # container: builds the image and runs the shards in it, as the caller's user with the Docker
-# socket's group, on the machine's network, with the checkout at its own path: a path the tests
-# hand to a sibling container names the same directory on the machine.
+# socket's group, on the machine's network, with the checkout and /tmp at their own paths: a path
+# the tests hand to a sibling container, a JUnit @TempDir among them, names the same directory on
+# the machine.
 container() {
     local root
     root=$(git rev-parse --show-toplevel)
@@ -32,6 +33,7 @@ container() {
         --user "$(id -u):$(id -g)" --group-add "$(stat -c %g "$SOCKET")" \
         --volume "$SOCKET:$SOCKET" \
         --volume "$root:$root" --workdir "$root" \
+        --volume /tmp:/tmp \
         --volume "$HOME/.m2:$CONTAINER_HOME/.m2" \
         "$IMAGE" fork/suite.sh shards
 }

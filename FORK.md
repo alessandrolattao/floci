@@ -62,9 +62,9 @@ apt, the tools the tests run from the machine's `PATH`: `curl`, `wget`, `unzip`,
 does.
 
 The container runs as the caller's user with the Docker socket's group, on the machine's network,
-with the machine's `/var/run/docker.sock` and `~/.m2`, and the checkout at its own path, so a path
-the tests hand to a sibling container names the same directory on the machine. Inside it, the
-suite:
+with the machine's `/var/run/docker.sock` and `~/.m2`, and the checkout and the machine's `/tmp` at
+their own paths, so a path the tests hand to a sibling container, a JUnit `@TempDir` among them,
+names the same directory on the machine. Inside it, the suite:
 
 1. starts from a clean build (`./mvnw clean`), so nothing an earlier build left in `target/` can
    change the result
@@ -78,6 +78,11 @@ suite:
 
 Each shard's logs stay in `target/suite/shard-<n>` and the test reports in
 `target/surefire-reports`. The suite fails when a shard fails.
+
+Two tests that CI's runner runs are skipped here: the two of
+`ContainerCaBundleDockerIntegrationTest`, which skip themselves when Floci runs in a container, as
+`ContainerDetector` tells from the `/.dockerenv` that Docker writes in every container. Upstream's
+CI runs them on every pull request.
 
 ## The image
 
