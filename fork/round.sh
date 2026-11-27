@@ -11,6 +11,7 @@
 set -euo pipefail
 
 readonly FORK=alessandrolattao/floci
+readonly IMAGE=ghcr.io/alessandrolattao/floci
 readonly LABEL=integration
 # The fork's own workflows. Every other workflow on the fork is upstream's, and stays disabled.
 readonly OWN_WORKFLOWS=(.github/workflows/integration-image.yml)
@@ -48,6 +49,18 @@ skips_push() {
     local message
     message=$(git log -1 --format=%B "$1")
     grep -qE '\[(skip ci|ci skip|no ci|skip actions|actions skip)\]|^skip-checks: ?true$' <<<"$message"
+}
+
+# image_published <tag>: succeeds when ghcr.io carries the image of <tag>, looked up as the image
+# workflow looks it up.
+image_published() {
+    docker buildx imagetools inspect "$IMAGE:$1" >/dev/null 2>&1
+}
+
+# start_image <tag>: starts the image workflow on <tag>, for a tag whose push started nothing.
+start_image() {
+    gh workflow run integration-image.yml --repo "$FORK" --ref "$1" ||
+        die "$1 is pushed but its image did not start: gh workflow run integration-image.yml --repo $FORK --ref $1"
 }
 
 # contained <commit> <ref>...: succeeds when one of <ref> already contains <commit>.
@@ -141,7 +154,12 @@ round() {
     if [ -n "$published" ]; then
         [ "$published" = "$commit" ] || die "$tag on origin names $published, not $commit"
         git push --force-with-lease="refs/heads/$LABEL:$lease" origin "$LABEL"
-        echo "round: $tag is already on origin: its suite passed, nothing to publish"
+        if image_published "$tag"; then
+            echo "round: $tag and its image are already published: its suite passed, nothing to publish"
+        else
+            start_image "$tag"
+            echo "round: $tag is already on origin but its image is not published: image started with a dispatch"
+        fi
         return 0
     fi
 
@@ -157,8 +175,7 @@ round() {
     git push --force-with-lease="refs/heads/$LABEL:$lease" origin "$LABEL"
     git push origin "refs/tags/$tag"
     if skips_push "$commit"; then
-        gh workflow run integration-image.yml --repo "$FORK" --ref "$tag" ||
-            die "$tag is pushed but its image did not start: gh workflow run integration-image.yml --repo $FORK --ref $tag"
+        start_image "$tag"
         echo "round: $commit carries [skip ci], which skips the tag's push: image started with a dispatch"
     fi
     echo "round: $tag"

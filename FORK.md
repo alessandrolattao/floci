@@ -46,9 +46,10 @@ port 4566, so nothing else may listen there while a round runs.
 
 A round with nothing new publishes nothing. When `origin/integration` already merges `main`'s
 head and the same pull request heads, in the same order, the round keeps it instead of building
-it again. When the result's tag is already on `origin`, its suite has already passed and its push
-has already run the image workflow: the round leaves `integration` on that commit and stops before
-the suite.
+it again. When the result's tag is already on `origin`, its suite has already passed: the round
+leaves `integration` on that commit and stops before the suite. If the tag's image is not on
+`ghcr.io` (its run failed, or it never started), the round also starts the image workflow on
+the tag with a dispatch.
 
 ## The image
 
