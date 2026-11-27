@@ -5,8 +5,8 @@
 #
 #   fork/suite.sh
 #
-# Runs in a checkout of the fork, on a machine with Docker. It runs the shards of ci.yml one after
-# another, leaves their logs in target/suite, and fails when one fails.
+# Runs in a checkout of the fork, on a machine with Docker. It starts from a clean build, runs the
+# shards of ci.yml one after another, leaves their logs in target/suite, and fails when one fails.
 set -euo pipefail
 
 readonly IMAGE=floci-fork-suite
@@ -55,12 +55,14 @@ summary() {
     grep -a -E 'Tests run: [0-9]+, Failures: [0-9]+, Errors: [0-9]+, Skipped: [0-9]+$' "$1" | tail -1 || true
 }
 
-# shards: ci.yml's shard job for each shard, one after another. Inside the container only.
+# shards: ci.yml's shard job for each shard, one after another, from a clean build. Inside the
+# container only.
 shards() {
     [ -e /.dockerenv ] || die "the shards run only inside the suite's container: run fork/suite.sh"
     local total shard dir plain quarkus status=0
     total=$(shard_total)
 
+    ./mvnw -B -q clean || die "./mvnw clean failed"
     mkdir -p "$LOGS"
     test_classes src/test/java java >"$LOGS/all-classes.txt"
     python3 -m unittest discover -s .github/ci -p test_partition.py >"$LOGS/test-partition.log" 2>&1 ||

@@ -66,9 +66,11 @@ with the machine's `/var/run/docker.sock` and `~/.m2`, and the checkout at its o
 the tests hand to a sibling container names the same directory on the machine. Inside it, the
 suite:
 
-1. lists the test classes and runs the partition's own tests, as `ci.yml` does, compiles once, and
+1. starts from a clean build (`./mvnw clean`), so nothing an earlier build left in `target/` can
+   change the result
+2. lists the test classes and runs the partition's own tests, as `ci.yml` does, compiles once, and
    checks the compiled test classes against the list
-2. runs `ci.yml`'s shard job for each of its `SHARD_TOTAL` shards, one after another: the shard's
+3. runs `ci.yml`'s shard job for each of its `SHARD_TOTAL` shards, one after another: the shard's
    classes from `.github/ci/partition.sh`, its images prefetched in the background by
    `.github/ci/prefetch-images.sh`, then the plain classes four at a time
    (`-Dtest.classes.mode=concurrent`) and the `@QuarkusTest` classes, as
