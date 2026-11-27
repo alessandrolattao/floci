@@ -112,7 +112,8 @@ round() {
 
     local commit tag published tagged lease
     commit=$(git rev-parse HEAD)
-    tag="int-$(git rev-parse --short HEAD)"
+    # A fixed length: --short alone grows with the clone's object count, and so would the tag.
+    tag="int-$(git rev-parse --short=12 HEAD)"
     lease=$(git rev-parse -q --verify "refs/remotes/origin/$LABEL" || true)
 
     published=$(git ls-remote --tags origin "refs/tags/$tag" "refs/tags/$tag^{}" | awk '{ print $1 }' | tail -1)
