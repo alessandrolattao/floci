@@ -25,7 +25,9 @@ fork and `upstream` is floci-io/floci, with `gh` logged in:
 1. fetches `upstream` and `origin`
 2. disables on the fork every workflow that is not the fork's own (today only
    `integration-image.yml`), so a push of `main` runs nothing of floci-io/floci's
-3. merges `upstream/main` into `main` and pushes `main`
+3. merges `upstream/main` into `main` with `[skip ci]` in the merge's message, so the push starts
+   no `push` workflow, not even one the merge brings, pushes `main`, then disables again what that
+   push brought
 4. recreates the branch `integration` from `main`: it never merges `main` into an earlier
    integration
 5. merges, in pull request number order, the head of every open pull request labelled

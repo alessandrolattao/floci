@@ -65,13 +65,16 @@ round() {
     git fetch origin
     disable_upstream_workflows
 
+    # [skip ci] keeps the push of main from starting any push or pull_request workflow, one that
+    # the merge brings included; the second pass disables what that push registered.
     git switch main
     git merge --ff-only origin/main
-    if ! git_signed merge -S --no-edit upstream/main; then
+    if ! git_signed merge -S --no-ff -m "Merge upstream/main into main [skip ci]" upstream/main; then
         git merge --abort
         die "upstream/main conflicts with main: nothing pushed"
     fi
     git push origin main
+    disable_upstream_workflows
 
     local listed entries entry numbers=() heads=() i
     listed=$(gh pr list --repo "$FORK" --base main --label "$LABEL" --state open --limit 100 \
