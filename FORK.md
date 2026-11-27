@@ -9,6 +9,7 @@ never go to floci-io/floci:
 
 - `FORK.md`, this file
 - `fork/round.sh`, the round
+- `fork/suite.sh` and `fork/suite.Dockerfile`, the suite the round runs and its container
 - `.github/workflows/integration-image.yml`, the image
 
 ## Pending fixes
@@ -20,7 +21,7 @@ never merged on the fork. It leaves the integration when its pull request on the
 ## The round
 
 `fork/round.sh` builds the integration from scratch. It runs in a clone where `origin` is this
-fork and `upstream` is floci-io/floci, with `gh` logged in:
+fork and `upstream` is floci-io/floci, with `gh` logged in and Docker running:
 
 1. fetches `upstream` and `origin`
 2. disables on the fork every workflow that is not the fork's own (today only
@@ -33,8 +34,7 @@ fork and `upstream` is floci-io/floci, with `gh` logged in:
 5. merges, in pull request number order, the head of every open pull request labelled
    `integration`, one merge commit each. A head that `main` or a lower-numbered pending fix
    already contains has nothing to merge, and the round leaves it out
-6. runs the whole test suite on the result, in CI's four shards, through `local-tools/shards.sh`
-   (a script of the clone, outside the repository)
+6. runs the whole test suite on the result through `fork/suite.sh` (see [The suite](#the-suite))
 7. tags the result `int-<commit>`, the commit's hash cut to 12 characters, pushes `integration`
    with a lease and pushes the tag. When the tagged commit is the round's `[skip ci]` merge (no
    pull request is pending), the tag's push starts nothing either, so the round starts the image
@@ -50,6 +50,32 @@ it again. When the result's tag is already on `origin`, its suite has already pa
 leaves `integration` on that commit and stops before the suite. If the tag's image is not on
 `ghcr.io` (its run failed, or it never started), the round also starts the image workflow on
 the tag with a dispatch.
+
+## The suite
+
+`fork/suite.sh` runs Floci's whole test suite the way `.github/workflows/ci.yml` does, inside a
+container like CI's runner, so the tools of the machine that runs it cannot change the result.
+The container comes from `fork/suite.Dockerfile`: `eclipse-temurin:25.0.5_8-jdk-resolute`, the
+Ubuntu 26.04 and Temurin 25.0.5+8 of CI's `ubuntu-latest` with `setup-java` 25 temurin, plus, from
+apt, the tools the tests run from the machine's `PATH`: `curl`, `wget`, `unzip`, `python3`,
+`node`, and Docker's CLI from Docker's own apt repository. It sets `CI=true`, as GitHub's runner
+does.
+
+The container runs as the caller's user with the Docker socket's group, on the machine's network,
+with the machine's `/var/run/docker.sock` and `~/.m2`, and the checkout at its own path, so a path
+the tests hand to a sibling container names the same directory on the machine. Inside it, the
+suite:
+
+1. lists the test classes and runs the partition's own tests, as `ci.yml` does, compiles once, and
+   checks the compiled test classes against the list
+2. runs `ci.yml`'s shard job for each of its `SHARD_TOTAL` shards, one after another: the shard's
+   classes from `.github/ci/partition.sh`, its images prefetched in the background by
+   `.github/ci/prefetch-images.sh`, then the plain classes four at a time
+   (`-Dtest.classes.mode=concurrent`) and the `@QuarkusTest` classes, as
+   `.github/ci/split-concurrent.py` splits them
+
+Each shard's logs stay in `target/suite/shard-<n>` and the test reports in
+`target/surefire-reports`. The suite fails when a shard fails.
 
 ## The image
 

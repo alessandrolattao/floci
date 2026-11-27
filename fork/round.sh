@@ -6,8 +6,8 @@
 #   fork/round.sh
 #
 # Runs in a clone where origin is alessandrolattao/floci and upstream is floci-io/floci, with gh
-# logged in and local-tools/shards.sh in place. A merge conflict or a red suite stops the round
-# before integration or the tag is pushed.
+# logged in and Docker running (fork/suite.sh runs the suite in a container). A merge conflict or a
+# red suite stops the round before integration or the tag is pushed.
 set -euo pipefail
 
 readonly FORK=alessandrolattao/floci
@@ -93,7 +93,6 @@ merges_now() {
 
 round() {
     cd "$(git rev-parse --show-toplevel)"
-    [ -x local-tools/shards.sh ] || die "local-tools/shards.sh is missing: the round cannot run the suite"
     git diff --quiet HEAD -- || die "the checkout has uncommitted changes"
 
     git fetch upstream
@@ -165,7 +164,7 @@ round() {
         return 0
     fi
 
-    local-tools/shards.sh "$PWD" || die "the suite failed on $commit: nothing pushed but main"
+    fork/suite.sh || die "the suite failed on $commit (logs in target/suite): nothing pushed but main"
 
     tagged=$(git rev-parse -q --verify "refs/tags/$tag^{commit}" || true)
     if [ -z "$tagged" ]; then
