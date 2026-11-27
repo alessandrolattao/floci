@@ -43,12 +43,14 @@ disable_upstream_workflows() {
     done <<<"$listed"
 }
 
-# skips_push <commit>: succeeds when <commit>'s message carries one of the strings GitHub's
-# "Skipping workflow runs" lists, which keep a push from starting workflows, a tag's push included.
+# skips_push <commit>: succeeds when <commit>'s message keeps a push from starting workflows, a
+# tag's push included, as GitHub's "Skipping workflow runs" describes it: one of its strings
+# anywhere, or a skip-checks trailer that is the last trailer of a trailers section preceded by
+# two empty lines.
 skips_push() {
-    local message
+    local message trailer=$'\n\n\n([^\n]+\n)*skip-checks: ?true$'
     message=$(git log -1 --format=%B "$1")
-    grep -qE '\[(skip ci|ci skip|no ci|skip actions|actions skip)\]|^skip-checks: ?true$' <<<"$message"
+    grep -qE '\[(skip ci|ci skip|no ci|skip actions|actions skip)\]' <<<"$message" || [[ $message =~ $trailer ]]
 }
 
 # image_published <tag>: succeeds when ghcr.io carries the image of <tag>, looked up as the image

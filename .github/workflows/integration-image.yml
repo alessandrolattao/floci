@@ -21,6 +21,12 @@ permissions:
   contents: read
   packages: write
 
+# A tag's push and a dispatch on it can both start a run: the runs go one at a time, so the later
+# one finds the tag published.
+concurrency:
+  group: floci-images
+  cancel-in-progress: false
+
 env:
   IMAGE: ghcr.io/alessandrolattao/floci:${{ github.ref_name }}
 

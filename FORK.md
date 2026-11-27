@@ -62,8 +62,9 @@ image of `docker/Dockerfile.jvm-package`, built from the tagged commit, and it c
 - `FLOCI_VERSION`: the image reference, which `GET /_floci/health` reports
 
 A tag already published is never built again: it names one commit, and what a commit builds does
-not change. A pin on an older round keeps working after later rounds. The package is public, so a
-pull needs no login.
+not change. The workflow's runs go one at a time, so a tag's push and a dispatch on the same tag
+never publish it twice. A pin on an older round keeps working after later rounds. The package is
+public, so a pull needs no login.
 
 ## Pinning an image
 
