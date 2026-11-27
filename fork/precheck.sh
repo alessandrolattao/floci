@@ -366,9 +366,11 @@ precheck() {
     git rev-parse -q --verify "$UPSTREAM^{commit}" >/dev/null ||
         die "no $UPSTREAM after fetching upstream: the checkout needs floci-io/floci as the remote upstream"
     base=$(git merge-base "$UPSTREAM" HEAD) || die "HEAD shares no history with $UPSTREAM"
-    # Its physical path, the one Java prints the audited files under when TMPDIR is a symlink.
-    work=$(cd "$(mktemp -d)" && pwd -P)
+    # The trap is set only on a directory mktemp made: bash before 5.3 takes `cd ""` for a no-op.
+    work=$(mktemp -d) || die "could not create a temporary directory under ${TMPDIR:-/tmp}"
     trap 'rm -rf "$work"' EXIT
+    # Its physical path, the one Java prints the audited files under when TMPDIR is a symlink.
+    work=$(cd "$work" && pwd -P)
     mapfile -t java_lines < <(diff_lines '*.java')
     mapfile -t src_lines < <(diff_lines src)
 
