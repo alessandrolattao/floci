@@ -19,12 +19,13 @@ readonly NEW_METHOD='(public|private|protected|static) .*\('
 # before it, so a field initialised by a call is not taken for a method.
 readonly PRIVATE_STATIC_METHOD='private static [^=;(]*[^A-Za-z0-9_$]([A-Za-z_$][A-Za-z0-9_$]*)[[:space:]]*\('
 # The declarations check 1 reads, each anchored at the start of the line, after its annotations,
-# with the declared name as the last group. A method needs a modifier; `-` keeps a switch arm's
-# `default -> call(` from reading as one.
+# with the declared name as the last group. A method needs a modifier and a return type, which ends
+# in a letter, a digit, `>` or `]` before the blank that precedes the name, so a statement such as
+# `synchronized (lockFor(key)) {` is not one; `-` keeps a switch arm's `default -> call(` out.
 readonly ANNOTATIONS='^([[:space:]]*@[A-Za-z_$][A-Za-z0-9_$.]*(\([^)]*\))?)*[[:space:]]*'
 readonly DECLARED_TYPE="${ANNOTATIONS}((public|protected|private|static|final|abstract|sealed|non-sealed|strictfp)[[:space:]]+)*(class|interface|enum|record|@interface)[[:space:]]+([A-Za-z_\$][A-Za-z0-9_\$]*)"
 readonly DECLARED_CONSTANT="${ANNOTATIONS}((public|protected|private)[[:space:]]+)?(static[[:space:]]+final|final[[:space:]]+static)[[:space:]][^=;(-]*[^A-Za-z0-9_\$]([A-Za-z_\$][A-Za-z0-9_\$]*)[[:space:]]*[=;]"
-readonly DECLARED_METHOD="${ANNOTATIONS}((public|protected|private|static|final|abstract|synchronized|native|default|strictfp)[[:space:]]+)+[^=;(-]*[^A-Za-z0-9_\$]([A-Za-z_\$][A-Za-z0-9_\$]*)[[:space:]]*\("
+readonly DECLARED_METHOD="${ANNOTATIONS}((public|protected|private|static|final|abstract|synchronized|native|default|strictfp)[[:space:]]+)+[^=;(-]*[]A-Za-z0-9_\$>][[:space:]]+([A-Za-z_\$][A-Za-z0-9_\$]*)[[:space:]]*\("
 # The fork's files sit next to this script, whichever branch it checks.
 FORK_MD="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/FORK.md"
 readonly FORK_MD
@@ -134,9 +135,9 @@ declaration() {
 }
 
 # Symbols the branch removes or renames: a name a removed line declares and no added line declares.
-# Each is looked for on upstream/main where Java lets it be used: a type in every file, a private
-# member in its own file, any other member in its own file, its package's files and the files that
-# name its class. Only a use upstream/main added after the merge base is reported: a line the merge
+# Each is looked for on upstream/main where Java lets it be used: a private member, a private
+# nested type included, in its own file; any other type in every file; any other member in its own
+# file, its package's files and the files that name its class. Only a use upstream/main added after the merge base is reported: a line the merge
 # base's version of the file already has (the branch's own removals among them) is dropped, counted
 # per file and text, and a caller the branch leaves in place is in HEAD, where the compile reports it.
 check_removed_symbols() {
@@ -167,10 +168,10 @@ check_removed_symbols() {
         else
             patterns=(-w -F -e "$name")
         fi
-        if [ "$kind" = type ]; then
-            paths=('*.java')
-        elif [ "$private" = yes ]; then
+        if [ "$private" = yes ]; then
             paths=("$origin")
+        elif [ "$kind" = type ]; then
+            paths=('*.java')
         else
             class=$(basename "$origin" .java)
             package=$(dirname "$origin")
