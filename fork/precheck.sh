@@ -64,9 +64,10 @@ trimmed() {
 
 # diff_lines <pathspec>...: every line the branch changes, as <sign>:<path>:<line>:<text>. An added
 # line has the sign + and its path and number in HEAD; a removed one has - and its path and number
-# in the merge base.
+# in the merge base. A renamed or moved file counts only its changed lines, as git diff
+# upstream/main...HEAD shows it.
 diff_lines() {
-    git -c core.quotePath=false diff --no-color --no-ext-diff --no-renames \
+    git -c core.quotePath=false diff --no-color --no-ext-diff --find-renames \
         --src-prefix=a/ --dst-prefix=b/ -U0 "$base" HEAD -- "$@" |
         awk '
             /^diff --git / { header = 1; next }
@@ -232,7 +233,7 @@ check_checkstyle() {
     section "2. Braces and catch blocks on the lines the branch adds (Checkstyle)"
     local files=() java jar out status=0 errors entry sign path line text violation found=0
     local -A added=()
-    mapfile -t files < <(git -c core.quotePath=false diff --name-only --no-renames --diff-filter=d \
+    mapfile -t files < <(git -c core.quotePath=false diff --name-only --find-renames --diff-filter=d \
         "$base" HEAD -- '*.java')
     if [ ${#files[@]} -eq 0 ]; then
         note "no Java file changed"
