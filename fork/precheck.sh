@@ -270,6 +270,8 @@ $out"
         [ "$sign" != + ] || added["$path:$line"]=1
     done
     while IFS= read -r violation; do
+        [[ $violation == "[ERROR] $work/tree/"* ]] ||
+            die "Checkstyle reported a file outside $work/tree: $violation"
         violation=${violation#"[ERROR] $work/tree/"}
         parse_entry "checkstyle:$violation"
         if [ -n "${added["$path:$line"]:-}" ]; then
@@ -360,7 +362,8 @@ precheck() {
     git rev-parse -q --verify "$UPSTREAM^{commit}" >/dev/null ||
         die "no $UPSTREAM after fetching upstream: the checkout needs floci-io/floci as the remote upstream"
     base=$(git merge-base "$UPSTREAM" HEAD) || die "HEAD shares no history with $UPSTREAM"
-    work=$(mktemp -d)
+    # Its physical path, the one Java prints the audited files under when TMPDIR is a symlink.
+    work=$(cd "$(mktemp -d)" && pwd -P)
     trap 'rm -rf "$work"' EXIT
     mapfile -t java_lines < <(diff_lines '*.java')
     mapfile -t src_lines < <(diff_lines src)
