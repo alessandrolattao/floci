@@ -136,16 +136,19 @@ declaration() {
 }
 
 # Symbols the branch removes or renames: a name a removed line declares and no added line declares.
-# Each is looked for on upstream/main where Java lets it be used: a private member, a private
-# nested type included, in its own file; any other type in every file; any other member in its own
-# file, its package's files and the files that name its class. Only a use upstream/main added after the merge base is reported: a line the merge
-# base's version of the file already has (the branch's own removals among them) is dropped, counted
-# per file and text, and a caller the branch leaves in place is in HEAD, where the compile reports it.
+# Each is looked for on upstream/main where Java lets it be used: a private member, a private nested
+# type included, in its own file; any other type in every file; any other member in its own file,
+# its package's files and the files that name its class. Only a use upstream/main added after the
+# merge base is reported: a line the merge base's version of the same file already has, followed
+# through the files upstream/main renamed and counted per file and text, is dropped (the branch's
+# own removals among them). A caller the branch leaves in place is in HEAD, where the compile
+# reports it.
 check_removed_symbols() {
     section "1. Symbols the branch removes that $UPSTREAM started using after the merge base"
-    local entry sign path line text kind name private symbol origin class package key hit found=0
-    local -A declared=() symbols=() before=()
-    local patterns=() paths=() hits=()
+    local entry sign path line text kind name private symbol origin home class package key hit
+    local status old new found=0
+    local -A declared=() symbols=() renamed_to=() renamed_from=() hit_paths=() before=()
+    local patterns=() paths=() base_paths=() candidates=() hits=()
     for entry in "${java_lines[@]}"; do
         parse_entry "$entry"
         declaration "$text" || continue
@@ -156,6 +159,12 @@ check_removed_symbols() {
         fi
     done
 
+    while IFS=$'\t' read -r status old new; do
+        renamed_to[$old]=$new
+        renamed_from[$new]=$old
+    done < <(git -c core.quotePath=false diff --no-color --no-ext-diff --find-renames --name-status \
+        --diff-filter=R "$base" "$UPSTREAM" -- '*.java')
+
     for symbol in "${!symbols[@]}"; do
         kind=${symbol%%:*}
         private=${symbol#*:}
@@ -164,42 +173,60 @@ check_removed_symbols() {
         private=${private%%:*}
         name=${name%%:*}
         [ -z "${declared[$name]:-}" ] || continue
+        home=${renamed_to[$origin]:-$origin}
         if [ "$kind" = method ]; then
             patterns=(-E -e "(^|[^A-Za-z0-9_\$])${name//\$/\\\$}[[:space:]]*\(" -e "::${name//\$/\\\$}([^A-Za-z0-9_\$]|\$)")
         else
             patterns=(-w -F -e "$name")
         fi
         if [ "$private" = yes ]; then
-            paths=("$origin")
+            paths=(":(literal)$home")
         elif [ "$kind" = type ]; then
             paths=('*.java')
         else
             class=$(basename "$origin" .java)
-            package=$(dirname "$origin")
+            package=$(dirname "$home")
             case $package in
                 */java/*) package="**/java/${package#*/java/}" ;;
             esac
-            paths=("$origin" ":(glob)$package/*.java")
+            paths=(":(literal)$home" ":(glob)$package/*.java")
             while IFS= read -r hit; do
-                paths+=("${hit#"$UPSTREAM:"}")
-            done < <(git -c core.quotePath=false grep -l -w -F -e "$class" "$UPSTREAM" -- '*.java' || true)
+                paths+=(":(literal)${hit#"$UPSTREAM:"}")
+            done < <(git -c core.quotePath=false grep --no-color -l -w -F -e "$class" "$UPSTREAM" -- '*.java' || true)
         fi
-        hits=()
+
+        candidates=()
+        hit_paths=()
+        while IFS= read -r hit; do
+            hit=${hit#"$UPSTREAM:"}
+            candidates+=("$hit")
+            hit_paths[${hit%%:*}]=1
+        done < <(git -c core.quotePath=false grep --no-color --no-column -n -I "${patterns[@]}" "$UPSTREAM" -- \
+            "${paths[@]}" || true)
+        [ ${#candidates[@]} -gt 0 ] || continue
+        # The same files in the merge base, under the paths they had there.
+        base_paths=()
+        for path in "${!hit_paths[@]}"; do
+            base_paths+=(":(literal)${renamed_from[$path]:-$path}")
+        done
         before=()
         while IFS= read -r hit; do
             parse_entry "base:${hit#"$base:"}"
-            key="$path:$text"
+            key="${renamed_to[$path]:-$path}:$text"
             before[$key]=$((${before[$key]:-0} + 1))
-        done < <(git -c core.quotePath=false grep -n -I "${patterns[@]}" "$base" -- "${paths[@]}" || true)
-        while IFS= read -r hit; do
-            parse_entry "upstream:${hit#"$UPSTREAM:"}"
+        done < <(git -c core.quotePath=false grep --no-color --no-column -n -I "${patterns[@]}" "$base" -- \
+            "${base_paths[@]}" || true)
+
+        hits=()
+        for hit in "${candidates[@]}"; do
+            parse_entry "upstream:$hit"
             key="$path:$text"
             if [ "${before[$key]:-0}" -gt 0 ]; then
                 before[$key]=$((${before[$key]} - 1))
             else
                 hits+=("$path:$line: $(trimmed "$text")")
             fi
-        done < <(git -c core.quotePath=false grep -n -I "${patterns[@]}" "$UPSTREAM" -- "${paths[@]}" || true)
+        done
         if [ ${#hits[@]} -gt 0 ]; then
             problem "$kind $name, removed from $origin, is used by lines $UPSTREAM added after the merge base:"
             printf '    %s\n' "${hits[@]}"
@@ -233,7 +260,7 @@ check_checkstyle() {
     section "2. Braces and catch blocks on the lines the branch adds (Checkstyle)"
     local files=() java jar out status=0 errors entry sign path line text violation found=0
     local -A added=()
-    mapfile -t files < <(git -c core.quotePath=false diff --name-only --find-renames --diff-filter=d \
+    mapfile -t files < <(git -c core.quotePath=false diff --no-color --name-only --find-renames --diff-filter=d \
         "$base" HEAD -- '*.java')
     if [ ${#files[@]} -eq 0 ]; then
         note "no Java file changed"
