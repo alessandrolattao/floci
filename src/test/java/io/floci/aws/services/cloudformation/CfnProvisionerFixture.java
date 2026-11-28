@@ -386,8 +386,8 @@ final class CfnProvisionerFixture {
             if (snsService != null) {
                 discovered.add(new SnsCfnProvisioner(snsService));
             }
-            if (sesService != null && sesIdentityService != null) {
-                discovered.add(new SesCfnProvisioner(sesService, sesIdentityService));
+            if (sesService != null && sesIdentityService != null && sesConfigurationSetService != null) {
+                discovered.add(new SesCfnProvisioner(sesService, sesIdentityService, sesConfigurationSetService));
             }
             if (sesConfigurationSetService != null) {
                 discovered.add(new SesEventDestinationCfnProvisioner(sesConfigurationSetService));

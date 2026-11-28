@@ -1,14 +1,18 @@
 package io.floci.aws.services.cloudformation.provisioners;
 
+import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ObjectNode;
 import io.floci.aws.core.common.AwsArnUtils;
 import io.floci.aws.core.common.AwsException;
 import io.floci.aws.services.cloudformation.model.StackResource;
+import io.floci.aws.services.ses.SesConfigurationSetService;
 import io.floci.aws.services.ses.SesIdentityService;
 import io.floci.aws.services.ses.SesService;
+import io.floci.aws.services.ses.SesV2Json;
 import io.floci.aws.services.ses.model.ConfigurationSet;
+import io.floci.aws.services.ses.model.DeliveryOptions;
 import io.floci.aws.services.ses.model.Identity;
 import io.floci.aws.services.ses.model.Tag;
 import jakarta.enterprise.context.ApplicationScoped;
@@ -30,14 +34,20 @@ public class SesCfnProvisioner implements CfnResourceProvisioner {
     private static final String DEFAULT_KEY_LENGTH = "RSA_2048_BIT";
     private static final String MANAGED_TAGS_ATTR = "__FlociSesManagedTags";
     private static final String UPDATE_SNAPSHOT_ATTR = "__FlociSesUpdateSnapshot";
+    private static final String DELIVERY_OPTIONS_SNAPSHOT_ATTR = "__FlociSesDeliveryOptionsSnapshot";
+    private static final String DELIVERY_OPTIONS = "DeliveryOptions";
+    private static final Set<String> DELIVERY_OPTION_KEYS = Set.of("TlsPolicy", "SendingPoolName", "MaxDeliverySeconds");
     private static final ObjectMapper MAPPER = new ObjectMapper().findAndRegisterModules();
     private final SesService sesService;
     private final SesIdentityService identityService;
+    private final SesConfigurationSetService configurationSets;
 
     @Inject
-    public SesCfnProvisioner(SesService sesService, SesIdentityService identityService) {
+    public SesCfnProvisioner(SesService sesService, SesIdentityService identityService,
+                             SesConfigurationSetService configurationSets) {
         this.sesService = sesService;
         this.identityService = identityService;
+        this.configurationSets = configurationSets;
     }
 
     @Override
@@ -137,12 +147,15 @@ public class SesCfnProvisioner implements CfnResourceProvisioner {
             throw invalid("Properties must be an object.");
         }
         if (resolved != null) {
-            validateKeys(resolved, Set.of("Name"), "Properties");
+            validateKeys(resolved, Set.of("Name", DELIVERY_OPTIONS), "Properties");
         }
         String explicitName = optionalText(resolved, "Name");
         if (explicitName != null && explicitName.isBlank()) {
             throw invalid("Name must not be empty.");
         }
+        JsonNode declaredDeliveryOptions = object(resolved, DELIVERY_OPTIONS, DELIVERY_OPTION_KEYS, ctx);
+        DeliveryOptions deliveryOptions = declaredDeliveryOptions == null
+                ? null : SesV2Json.parseDeliveryOptions(declaredDeliveryOptions);
         boolean declaredReplacement = ctx.isUpdate()
                 && ctx.changes(CONFIGURATION_SET_TYPE, props).requiresReplacement();
         String name = declaredReplacement && explicitName == null
@@ -159,10 +172,37 @@ public class SesCfnProvisioner implements CfnResourceProvisioner {
                 && CfnResourceDispatcher.isStub(ctx.priorPhysicalId(), attributesBefore);
         boolean created = !ctx.reusesPriorEntity(name) || priorStub;
         if (created) {
-            sesService.createConfigurationSet(new ConfigurationSet(name), ctx.region());
+            ConfigurationSet configurationSet = new ConfigurationSet(name);
+            configurationSet.setDeliveryOptions(deliveryOptions);
+            sesService.createConfigurationSet(configurationSet, ctx.region());
+        } else if (declaredDeliveryOptions != null || ctx.droppedProperties(resolved).contains(DELIVERY_OPTIONS)) {
+            DeliveryOptions previous = configurationSets.get(name, ctx.region()).getDeliveryOptions();
+            sesService.setConfigurationSetDeliveryOptions(name, deliveryOptions, ctx.region());
+            ObjectNode snapshot = MAPPER.createObjectNode();
+            snapshot.put("region", ctx.region());
+            snapshot.set(DELIVERY_OPTIONS, MAPPER.valueToTree(previous));
+            resource.getAttributes().put(DELIVERY_OPTIONS_SNAPSHOT_ATTR, snapshot.toString());
         }
         resource.setPhysicalId(name);
         ReplacementCleanup.record(resource, ctx, attributesBefore, replacing);
+    }
+
+    /** Puts back the delivery options an in-place update replaced, as they were before it. */
+    private void restoreDeliveryOptions(StackResource resource) {
+        String raw = resource.getAttributes().get(DELIVERY_OPTIONS_SNAPSHOT_ATTR);
+        if (raw == null) {
+            return;
+        }
+        try {
+            JsonNode snapshot = MAPPER.readTree(raw);
+            JsonNode stored = snapshot.path(DELIVERY_OPTIONS);
+            DeliveryOptions previous = stored.isObject() ? MAPPER.treeToValue(stored, DeliveryOptions.class) : null;
+            sesService.setConfigurationSetDeliveryOptions(resource.getPhysicalId(), previous,
+                    snapshot.path("region").asText());
+        } catch (JsonProcessingException failure) {
+            throw new IllegalStateException("Invalid SES configuration set update snapshot", failure);
+        }
+        resource.getAttributes().remove(DELIVERY_OPTIONS_SNAPSHOT_ATTR);
     }
 
     @Override
@@ -195,7 +235,8 @@ public class SesCfnProvisioner implements CfnResourceProvisioner {
                     "SES identity rollback is still pending for " + resource.getPhysicalId(), 500);
         }
         UpdateCleanupResult cleanup = ReplacementCleanup.complete(resource, this::delete);
-        if (!cleanup.applicable() && resource.getAttributes().containsKey(UPDATE_SNAPSHOT_ATTR)) {
+        if (!cleanup.applicable() && (resource.getAttributes().containsKey(UPDATE_SNAPSHOT_ATTR)
+                || resource.getAttributes().containsKey(DELIVERY_OPTIONS_SNAPSHOT_ATTR))) {
             return new UpdateCleanupResult(true, true, null, 0, null);
         }
         return cleanup;
@@ -215,6 +256,7 @@ public class SesCfnProvisioner implements CfnResourceProvisioner {
     public void clearUpdate(StackResource resource) {
         ReplacementCleanup.clear(resource);
         resource.getAttributes().remove(UPDATE_SNAPSHOT_ATTR);
+        resource.getAttributes().remove(DELIVERY_OPTIONS_SNAPSHOT_ATTR);
     }
 
     @Override
@@ -235,7 +277,9 @@ public class SesCfnProvisioner implements CfnResourceProvisioner {
     @Override
     public boolean rollbackUpdate(StackResource resource) {
         if (CONFIGURATION_SET_TYPE.equals(resource.getResourceType())) {
-            ReplacementCleanup.rollback(resource, this::delete);
+            if (!ReplacementCleanup.rollback(resource, this::delete)) {
+                restoreDeliveryOptions(resource);
+            }
             return true;
         }
         if (ReplacementCleanup.rollback(resource, this::delete)) {
