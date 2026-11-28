@@ -8,9 +8,65 @@ Its `main` is floci-io/floci's `main` plus commits that only add the fork's own 
 never go to floci-io/floci:
 
 - `FORK.md`, this file
+- `fork/precheck.sh`, the checks before a pull request
 - `fork/round.sh`, the round
 - `fork/suite.sh` and `fork/suite.Dockerfile`, the suite the round runs and its container
 - `.github/workflows/integration-image.yml`, the image
+
+## Before a pull request
+
+`fork/precheck.sh` checks what a branch changes against `upstream/main`, for the mistakes a tool
+can find, then prints the checklist below, which the pull request body answers. It runs in the
+branch's checkout, where `upstream` is floci-io/floci, with `git`, `curl` and Java. A
+branch cut from `upstream/main` does not carry the fork's files: run the script from the fork's
+clone, `<clone>/fork/precheck.sh`. Its first run downloads the Checkstyle CLI at `pom.xml`'s
+version into `${XDG_CACHE_HOME:-$HOME/.cache}/floci-precheck/`.
+
+It fetches `upstream`'s `main` and reads the branch's commits from their merge base with
+`upstream/main` (`git diff upstream/main...HEAD`), so a branch behind `upstream/main` is not
+charged with upstream's later changes; uncommitted changes are not checked. Checks 2, 3 and 5 read
+`*.java` files, check 4 reads `src`. It exits non-zero when it finds:
+
+1. a conflict with `upstream/main`, or a symbol the branch removes or renames that `upstream/main`
+   started using after the branch's merge base (a caller the branch leaves in place is in `HEAD`,
+   where `./mvnw test-compile` reports it)
+2. on a line the branch adds, an `if`, `else`, `for`, `while` or `do` without braces, an empty
+   `catch`, with a comment or without, whose variable is neither `ignored` nor `expected`, or a
+   `catch` of `Exception`, `RuntimeException`, `Throwable` or `Error`
+3. on a line the branch adds, `Thread.sleep`, `Instant.now()` or `System.currentTimeMillis`
+
+It prints, without failing:
+
+4. the methods the branch adds, each to be looked for on `upstream/main` before it stays, and the
+   `private static` methods it adds in more than one file
+5. every `new AwsException(` it adds, each to be tied to a measured AWS error body
+
+The checklist, which `fork/precheck.sh` prints:
+
+- Check the entry points and the callers of each method the branch changes.
+- Give every new path its IAM, account and Region context: enforcement on, a denied identity, a
+  non-default account, a resource in another account, every path form in `IamActionRegistry`.
+- Say what state is left behind when a step after a create, a lock or a deferral throws or races
+  with a delete.
+- Point every claim about AWS at a raw measurement line.
+- Assert the measured AWS error body for each `AwsException`.
+- Register every test resource with `PartitionCleanup` or the class's cleanup, with no catch-all
+  around the delete.
+- Read the valid CloudFormation forms (`AWS::NoValue`, `Fn::If`, `CommaDelimitedList`) through the
+  engine's helpers.
+- Pass the CloudFormation ratchets: `CfnSchemaCoverageTest`, `CfnResourceInventoryTest`,
+  `CfnProvisionerFixtureTest`, `make cfn-schema-surface-sync`, and the rows in
+  `getatt-attribute-gaps.tsv`, `schema-surface.tsv`, `writable-property-gaps.tsv` and
+  `drop-policy.tsv`.
+- Name the SDK and CLI versions that verified each new action.
+- Say why, when the pull request adds no tests.
+- Follow every step of `CONTRIBUTING.md`'s "Adding a New AWS Service" for a new service.
+- Fill the `-` placeholder description of every action row `make docs-sync` adds.
+- Run `make partition-baseline` and commit the smaller baseline when a partition literal goes.
+
+Every fork issue carries the label `review`. Its code review runs `fork/precheck.sh` on the branch
+and walks this checklist together with `AGENTS.md`, `CONTRIBUTING.md` and
+`.github/pull_request_template.md`.
 
 ## Pending fixes
 
