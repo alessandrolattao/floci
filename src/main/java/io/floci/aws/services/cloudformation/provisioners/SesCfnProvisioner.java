@@ -1,6 +1,5 @@
 package io.floci.aws.services.cloudformation.provisioners;
 
-import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ObjectNode;
@@ -196,19 +195,14 @@ public class SesCfnProvisioner implements CfnResourceProvisioner {
 
     /** Puts back the delivery options an in-place update replaced, as they were before it. */
     private void restoreDeliveryOptions(StackResource resource) {
-        String raw = resource.getAttributes().get(DELIVERY_OPTIONS_SNAPSHOT_ATTR);
-        if (raw == null) {
+        JsonNode snapshot = CfnRollback.updateSnapshot(resource, DELIVERY_OPTIONS_SNAPSHOT_ATTR);
+        if (snapshot == null) {
             return;
         }
-        try {
-            JsonNode snapshot = MAPPER.readTree(raw);
-            JsonNode stored = snapshot.path(DELIVERY_OPTIONS);
-            DeliveryOptions previous = stored.isObject() ? MAPPER.treeToValue(stored, DeliveryOptions.class) : null;
-            sesService.setConfigurationSetDeliveryOptions(resource.getPhysicalId(), previous,
-                    snapshot.path("region").asText());
-        } catch (JsonProcessingException failure) {
-            throw new IllegalStateException("Invalid SES configuration set update snapshot", failure);
-        }
+        JsonNode stored = snapshot.path(DELIVERY_OPTIONS);
+        DeliveryOptions previous = stored.isObject() ? MAPPER.convertValue(stored, DeliveryOptions.class) : null;
+        sesService.setConfigurationSetDeliveryOptions(resource.getPhysicalId(), previous,
+                CfnRollback.snapshotText(snapshot, "region"));
         resource.getAttributes().remove(DELIVERY_OPTIONS_SNAPSHOT_ATTR);
     }
 
