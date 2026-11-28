@@ -55,6 +55,7 @@ import io.floci.aws.services.apigateway.model.UsagePlan;
 import io.floci.aws.services.apigateway.model.UsagePlanKey;
 import io.floci.aws.services.apigateway.model.VpcLink;
 import io.floci.aws.services.apigatewayv2.ApiGatewayV2Service;
+import io.floci.aws.services.iam.PassedRoleLookup;
 import io.swagger.parser.OpenAPIParser;
 import io.swagger.v3.core.util.Json;
 import io.swagger.v3.oas.models.OpenAPI;
@@ -99,7 +100,7 @@ import java.util.function.Predicate;
 import java.util.regex.Pattern;
 
 @ApplicationScoped
-public class ApiGatewayService implements ResourceProvider, Resettable {
+public class ApiGatewayService implements ResourceProvider, Resettable, PassedRoleLookup {
 
     /** The only partition where API Gateway offers edge-optimized APIs and custom domain names. */
     private static final Set<String> EDGE_OPTIMIZED_PARTITIONS = Set.of("aws");
@@ -524,6 +525,10 @@ public class ApiGatewayService implements ResourceProvider, Resettable {
     public List<RestApi> getRestApis(String region) {
         String prefix = region + "::";
         return apiStore.scan(k -> k.startsWith(prefix));
+    }
+
+    public PaginatedResult<RestApi> getRestApiPage(String region, Integer limit, String position) {
+        return pageById(getRestApis(region), RestApi::getId, limit, position);
     }
 
     public synchronized void deleteRestApi(String region, String apiId) {
@@ -1315,14 +1320,15 @@ public class ApiGatewayService implements ResourceProvider, Resettable {
 
     /**
      * One page of a list, sorted by id here. The token is the id of the last item returned, and
-     * an unrecognised token is a {@code BadRequestException}, as on AWS.
+     * an unrecognised token is a {@code BadRequestException}, as on AWS. So is an explicitly empty
+     * {@code position}, which AWS refuses instead of serving the first page, and a blank one.
      */
     private static <T> PaginatedResult<T> pageById(List<T> items, Function<T, String> idOf, Integer limit,
                                                    String position) {
         List<T> sorted = items.stream().sorted(Comparator.comparing(idOf)).toList();
         int pageSize = resolvePageSize(limit);
         int start = 0;
-        if (position != null && !position.isBlank()) {
+        if (position != null) {
             while (start < sorted.size() && !position.equals(idOf.apply(sorted.get(start)))) {
                 start++;
             }
@@ -1956,9 +1962,10 @@ public class ApiGatewayService implements ResourceProvider, Resettable {
 
         // The page token is the last key id already returned, so a page resumes after it rather
         // than at a positional offset a concurrent key attachment could shift. Measured: an
-        // unrecognised token is a BadRequestException, not an empty page.
+        // unrecognised token is a BadRequestException, not an empty page. An empty or blank one
+        // is refused the same way, as on the collections paged by pageById.
         int from = 0;
-        if (position != null && !position.isBlank()) {
+        if (position != null) {
             int previous = -1;
             for (int i = 0; i < keys.size(); i++) {
                 if (position.equals(keys.get(i).getId())) {
@@ -2154,6 +2161,11 @@ public class ApiGatewayService implements ResourceProvider, Resettable {
     public List<UsagePlanKey> getUsagePlanKeys(String region, String usagePlanId) {
         String prefix = region + "::" + usagePlanId + "::";
         return usagePlanKeyStore.scan(k -> k.startsWith(prefix));
+    }
+
+    public PaginatedResult<UsagePlanKey> getUsagePlanKeyPage(String region, String usagePlanId, Integer limit,
+                                                             String position) {
+        return pageById(getUsagePlanKeys(region, usagePlanId), UsagePlanKey::getId, limit, position);
     }
 
     public void deleteUsagePlanKey(String region, String usagePlanId, String keyId) {
@@ -4314,6 +4326,17 @@ public class ApiGatewayService implements ResourceProvider, Resettable {
             restoreRestApi(region, apiId, snapshot);
             throw e;
         }
+    }
+
+    /**
+     * The definition an import or an overwrite reads, its whole body, its AWS variables resolved as
+     * {@link #importRestApi} and {@link #putRestApi} resolve them, so the roles IAM checks are the ones the
+     * integrations take.
+     */
+    @Override
+    public List<String> openApiDefinitions(String operation, String body, String region) {
+        return ("apigateway:ImportRestApi".equals(operation) || "apigateway:PutRestApi".equals(operation))
+                && body != null ? List.of(resolveOpenApiAwsVariables(region, body)) : List.of();
     }
 
     private String resolveOpenApiAwsVariables(String region, String value) {
