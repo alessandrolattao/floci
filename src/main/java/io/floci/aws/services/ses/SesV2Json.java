@@ -11,6 +11,7 @@ import io.floci.aws.core.common.JsonBooleanCoercion;
 import io.floci.aws.core.common.JsonNumberCoercion;
 import io.floci.aws.core.common.SmithyValidationErrors;
 import io.floci.aws.services.ses.model.CustomVerificationEmailTemplate;
+import io.floci.aws.services.ses.model.DeliveryOptions;
 import io.floci.aws.services.ses.model.Tag;
 
 import java.time.Instant;
@@ -26,8 +27,10 @@ import java.util.function.Predicate;
  * the resource {@code Tags} array, the v1-to-v2 error remapping applied at the v2 boundary, and the
  * epoch-seconds timestamp members of a response. Stateless by design so every controller can call
  * them without a bean; the one helper that reads a body takes the caller's {@link ObjectMapper}.
+ * {@link #parseDeliveryOptions} is public because {@code AWS::SES::ConfigurationSet} reads its
+ * {@code DeliveryOptions} through it, so a template and an API call cannot disagree about them.
  */
-final class SesV2Json {
+public final class SesV2Json {
 
     /** The deserializer's wording, which {@link SesV2RequestShapes}' walk of the body shapes shares. */
     static final String SERIALIZATION_EXCEPTION = "SerializationException";
@@ -177,6 +180,43 @@ final class SesV2Json {
             // A body that does not parse is not a raw send, so a paused account still answers first.
             return false;
         }
+    }
+
+    /** Reject a non-object option block, mirroring the AWS deserialization layer. */
+    static void requireOptionObject(JsonNode node) {
+        if (!node.isObject()) {
+            throw expectedNullError();
+        }
+    }
+
+    /**
+     * A configuration set's {@code DeliveryOptions} block, as CreateConfigurationSet and
+     * PutConfigurationSetDeliveryOptions read it; null when no member carries a value. The members'
+     * values are validated by {@link SesConfigurationSetService}.
+     */
+    public static DeliveryOptions parseDeliveryOptions(JsonNode node) {
+        requireOptionObject(node);
+        DeliveryOptions d = new DeliveryOptions();
+        d.setTlsPolicy(parseOptionString(node.path("TlsPolicy"), "TlsPolicy"));
+        d.setSendingPoolName(parseOptionString(node.path("SendingPoolName"), "SendingPoolName"));
+        JsonNode max = node.path("MaxDeliverySeconds");
+        if (!max.isMissingNode() && !max.isNull()) {
+            if (!max.isNumber()) {
+                throw new AwsException("BadRequestException",
+                        "MaxDeliverySeconds must be a number.", 400);
+            }
+            if (!max.isIntegralNumber()) {
+                throw new AwsException("BadRequestException",
+                        "MaxDeliverySeconds must be an integer.", 400);
+            }
+            d.setMaxDeliverySeconds(max.asLong());
+        }
+        d.setSharedPoolDeliveryMode(stringMemberOrAbsent(node, "SharedPoolDeliveryMode"));
+        if (d.getTlsPolicy() == null && d.getSendingPoolName() == null && d.getMaxDeliverySeconds() == null
+                && d.getSharedPoolDeliveryMode() == null) {
+            return null;
+        }
+        return d;
     }
 
     /** Read an optional string member, rejecting a non-string value the way the AWS deserialization layer does. */

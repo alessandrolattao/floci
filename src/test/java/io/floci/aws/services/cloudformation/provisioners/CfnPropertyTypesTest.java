@@ -11,6 +11,7 @@ import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.Arguments;
 import org.junit.jupiter.params.provider.MethodSource;
 
+import java.math.BigInteger;
 import java.util.stream.Stream;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
@@ -90,6 +91,20 @@ class CfnPropertyTypesTest {
                 "AWS::Test::Thing");
 
         assertEquals(json("{\"Pattern\": {\"source\": [\"app\"]}, \"Ratio\": \"half\"}"), read);
+    }
+
+    @Test
+    void wholeNumberTextBecomesTheNumberAndAnyOtherValueStaysAsItIs() {
+        for (String whole : new String[] {"300", "-5", "123456789012345678901234567890"}) {
+            JsonNode read = CfnPropertyTypes.wholeNumberFromText(json("\"" + whole + "\""));
+            assertTrue(read.isIntegralNumber(), whole);
+            assertEquals(new BigInteger(whole), read.bigIntegerValue());
+        }
+        for (String kept : new String[] {"\"4.5\"", "\"abc\"", "\" 300\"", "\"+300\"", "\"\"", "300", "4.5",
+                "true", "{}"}) {
+            assertEquals(json(kept), CfnPropertyTypes.wholeNumberFromText(json(kept)), kept);
+        }
+        assertNull(CfnPropertyTypes.wholeNumberFromText(null));
     }
 
     @Test

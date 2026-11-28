@@ -174,6 +174,8 @@ AWS::Lambda::Alias	FunctionName	create-only	a drop fails: the provisioner requir
 AWS::Lambda::Alias	FunctionVersion	keep:the update skips a null, so the stored version stays
 AWS::Lambda::Alias	Name	create-only	a drop fails: the provisioner requires it
 AWS::Lambda::Alias	RoutingConfig	clear	an empty map removes the weights, also when the template never declared it, so weights set outside the stack go
+AWS::SES::ConfigurationSet	DeliveryOptions	clear	the configuration set reads back without delivery options
+AWS::SES::ConfigurationSet	Name	create-only	a drop gives the configuration set a generated name, so the set is replaced
 AWS::SecretsManager::Secret	Description	clear
 AWS::SecretsManager::Secret	GenerateSecretString	keep:a dropped configuration adds no version, so the stored value stays
 AWS::SecretsManager::Secret	KmsKeyId	keep:the update skips a null, so the stored key stays

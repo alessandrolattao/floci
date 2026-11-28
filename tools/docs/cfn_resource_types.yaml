@@ -259,7 +259,7 @@ notes:
   AWS::DynamoDB::GlobalTable: '`SSESpecification` applied on create, not on update, with the AWS managed key; a replica''s own `SSESpecification` is not read'
   AWS::Cognito::UserPool: '`ProviderURL` is the local issuer of the tokens Floci mints, `<base-url>/<pool id>`; `EnabledMfas` is applied with `SetUserPoolMfaConfig`, as on AWS, and once `SMS_MFA` is on only `MfaConfiguration: OFF` turns it off'
   AWS::Cognito::UserPoolIdentityProvider: 'Ref returns the ProviderName; changing only `ProviderType` is refused, as on AWS, because the name is always the template''s and the replacement would need the same address'
-  AWS::SES::ConfigurationSet: 'only `Name` is supported; option and tag properties fail validation instead of being silently ignored; Ref returns the set name'
+  AWS::SES::ConfigurationSet: '`Name` and `DeliveryOptions` are supported; `DeliveryOptions` is applied on create and updated in place, and an update that drops it clears it; the other option and tag properties fail validation instead of being silently ignored; Ref returns the set name'
   AWS::SES::EmailIdentity: 'BYODKIM is not supported by this resource; Easy DKIM DNS attributes use the shared emulator signing zone `dkim.amazonses.com` rather than AWS''s region- and identity-specific zone assignment'
   AWS::SES::ReceiptRule: 'stored in an existing SES receipt rule set; Ref and RuleName return the rule name; management plane only, with no inbound mail delivery'
   AWS::Events::Archive: '`KmsKeyIdentifier` is ignored'

@@ -12,7 +12,6 @@ import io.floci.aws.core.common.SmithyValidationErrors;
 import io.floci.aws.services.ses.model.ArchivingOptions;
 import io.floci.aws.services.ses.model.ConfigurationSet;
 import io.floci.aws.services.ses.model.DashboardOptions;
-import io.floci.aws.services.ses.model.DeliveryOptions;
 import io.floci.aws.services.ses.model.EventDestination;
 import io.floci.aws.services.ses.model.GuardianOptions;
 import io.floci.aws.services.ses.model.MessageSecurityOptions;
@@ -42,12 +41,13 @@ import java.util.List;
 import java.util.Map;
 
 import static io.floci.aws.services.ses.SesV2Json.coerceBooleanOrFalse;
-import static io.floci.aws.services.ses.SesV2Json.expectedNullError;
 import static io.floci.aws.services.ses.SesV2Json.intMemberOrAbsent;
+import static io.floci.aws.services.ses.SesV2Json.parseDeliveryOptions;
 import static io.floci.aws.services.ses.SesV2Json.parseOptionString;
 import static io.floci.aws.services.ses.SesV2Json.parseTagsArray;
 import static io.floci.aws.services.ses.SesV2Json.readOptionBody;
 import static io.floci.aws.services.ses.SesV2Json.remapV1Exception;
+import static io.floci.aws.services.ses.SesV2Json.requireOptionObject;
 import static io.floci.aws.services.ses.SesV2Json.stringMapMemberOrAbsent;
 import static io.floci.aws.services.ses.SesV2Json.stringMemberOrAbsent;
 
@@ -386,13 +386,6 @@ public class SesConfigurationSetController {
         }
     }
 
-    /** Reject a non-object option block, mirroring the AWS deserialization layer. */
-    private static void requireOptionObject(JsonNode node) {
-        if (!node.isObject()) {
-            throw expectedNullError();
-        }
-    }
-
     // Enabled takes the shared SES v2 boolean coercion, which Jackson's own binding does not match.
     private EventDestination parseEventDestination(JsonNode edNode) throws JsonProcessingException {
         boolean enabled = coerceBooleanOrFalse(edNode.path("Enabled"));
@@ -429,31 +422,6 @@ public class SesConfigurationSetController {
             return null;
         }
         return t;
-    }
-
-    private static DeliveryOptions parseDeliveryOptions(JsonNode node) {
-        requireOptionObject(node);
-        DeliveryOptions d = new DeliveryOptions();
-        d.setTlsPolicy(parseOptionString(node.path("TlsPolicy"), "TlsPolicy"));
-        d.setSendingPoolName(parseOptionString(node.path("SendingPoolName"), "SendingPoolName"));
-        JsonNode max = node.path("MaxDeliverySeconds");
-        if (!max.isMissingNode() && !max.isNull()) {
-            if (!max.isNumber()) {
-                throw new AwsException("BadRequestException",
-                        "MaxDeliverySeconds must be a number.", 400);
-            }
-            if (!max.isIntegralNumber()) {
-                throw new AwsException("BadRequestException",
-                        "MaxDeliverySeconds must be an integer.", 400);
-            }
-            d.setMaxDeliverySeconds(max.asLong());
-        }
-        d.setSharedPoolDeliveryMode(stringMemberOrAbsent(node, "SharedPoolDeliveryMode"));
-        if (d.getTlsPolicy() == null && d.getSendingPoolName() == null && d.getMaxDeliverySeconds() == null
-                && d.getSharedPoolDeliveryMode() == null) {
-            return null;
-        }
-        return d;
     }
 
     private static ArchivingOptions parseArchivingOptions(JsonNode node) {

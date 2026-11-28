@@ -5,9 +5,11 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import io.floci.aws.core.common.AwsException;
 import io.floci.aws.services.cloudformation.CloudFormationTemplateEngine;
 import io.floci.aws.services.cloudformation.model.StackResource;
+import io.floci.aws.services.ses.SesConfigurationSetService;
 import io.floci.aws.services.ses.SesIdentityService;
 import io.floci.aws.services.ses.SesService;
 import io.floci.aws.services.ses.model.ConfigurationSet;
+import io.floci.aws.services.ses.model.DeliveryOptions;
 import io.floci.aws.services.ses.model.Identity;
 import io.floci.aws.services.ses.model.Tag;
 import org.junit.jupiter.api.Test;
@@ -42,7 +44,8 @@ class SesCfnProvisionerTest {
     private final ObjectMapper mapper = new ObjectMapper();
     private final SesService ses = mock(SesService.class);
     private final SesIdentityService identities = mock(SesIdentityService.class);
-    private final SesCfnProvisioner provisioner = new SesCfnProvisioner(ses, identities);
+    private final SesConfigurationSetService configurationSets = mock(SesConfigurationSetService.class);
+    private final SesCfnProvisioner provisioner = new SesCfnProvisioner(ses, identities, configurationSets);
 
     @Test
     void domainCreationSetsRefAndAllDkimDnsAttributes() throws Exception {
@@ -725,6 +728,202 @@ class SesCfnProvisionerTest {
     }
 
     @Test
+    void createAppliesDeliveryOptionsThroughTheValidatedCreate() throws Exception {
+        StackResource resource = configurationSetResource(null);
+
+        provisioner.provision(resource, props("""
+                {"Name": "delivery", "DeliveryOptions":
+                  {"TlsPolicy": "REQUIRE", "SendingPoolName": "pool", "MaxDeliverySeconds": 600}}
+                """), context(null));
+
+        ArgumentCaptor<ConfigurationSet> created = ArgumentCaptor.forClass(ConfigurationSet.class);
+        verify(ses).createConfigurationSet(created.capture(), eq("us-east-1"));
+        DeliveryOptions options = created.getValue().getDeliveryOptions();
+        assertEquals("REQUIRE", options.getTlsPolicy());
+        assertEquals("pool", options.getSendingPoolName());
+        assertEquals(600L, options.getMaxDeliverySeconds());
+        assertNull(options.getSharedPoolDeliveryMode());
+        verify(ses, never()).setConfigurationSetDeliveryOptions(any(), any(), any());
+    }
+
+    @Test
+    void maxDeliverySecondsWrittenAsWholeNumberTextIsReadAsThatNumber() throws Exception {
+        provisioner.provision(configurationSetResource(null), props("""
+                {"Name": "delivery", "DeliveryOptions": {"MaxDeliverySeconds": "600"}}
+                """), context(null));
+
+        verify(ses).createConfigurationSet(
+                argThat(set -> Long.valueOf(600).equals(set.getDeliveryOptions().getMaxDeliverySeconds())),
+                eq("us-east-1"));
+    }
+
+    @Test
+    void maxDeliverySecondsTextThatIsNoWholeNumberFailsAsTheSesV2ParseSays() throws Exception {
+        JsonNode properties = props("{\"Name\":\"delivery\",\"DeliveryOptions\":{\"MaxDeliverySeconds\":\"4.5\"}}");
+
+        AwsException failure = assertThrows(AwsException.class,
+                () -> provisioner.provision(configurationSetResource(null), properties, context(null)));
+
+        assertEquals("BadRequestException", failure.getErrorCode());
+        assertEquals("MaxDeliverySeconds must be a number.", failure.getMessage());
+        verify(ses, never()).createConfigurationSet(any(ConfigurationSet.class), any());
+    }
+
+    @Test
+    void deliveryOptionsLeaveOutAnAwsNoValueMember() throws Exception {
+        StackResource resource = configurationSetResource(null);
+
+        provisioner.provision(resource, props("""
+                {"Name": "delivery", "DeliveryOptions":
+                  {"TlsPolicy": "REQUIRE", "SendingPoolName": {"Ref": "AWS::NoValue"}}}
+                """), ProvisionContexts.standalone(null, null));
+
+        ArgumentCaptor<ConfigurationSet> created = ArgumentCaptor.forClass(ConfigurationSet.class);
+        verify(ses).createConfigurationSet(created.capture(), eq("us-east-1"));
+        assertEquals("REQUIRE", created.getValue().getDeliveryOptions().getTlsPolicy());
+        assertNull(created.getValue().getDeliveryOptions().getSendingPoolName());
+    }
+
+    @Test
+    void inPlaceUpdateReplacesTheDeliveryOptionsWithoutCreatingAgain() throws Exception {
+        StackResource resource = configurationSetResource("delivery");
+        storedDeliveryOptions("delivery", "REQUIRE");
+
+        provisioner.provision(resource, props("""
+                {"Name": "delivery", "DeliveryOptions": {"TlsPolicy": "OPTIONAL"}}
+                """), deliveryOptionsUpdateContext("REQUIRE"));
+
+        assertEquals("delivery", resource.getPhysicalId());
+        verify(ses).setConfigurationSetDeliveryOptions(eq("delivery"),
+                argThat(options -> "OPTIONAL".equals(options.getTlsPolicy())), eq("us-east-1"));
+        verify(ses, never()).createConfigurationSet(any(ConfigurationSet.class), any());
+        assertFalse(provisioner.hasReplacementUpdate(resource));
+    }
+
+    @Test
+    void updateThatDropsTheDeliveryOptionsClearsThem() throws Exception {
+        StackResource resource = configurationSetResource("delivery");
+        storedDeliveryOptions("delivery", "REQUIRE");
+
+        provisioner.provision(resource, props("{\"Name\":\"delivery\"}"), deliveryOptionsUpdateContext("REQUIRE"));
+
+        verify(ses).setConfigurationSetDeliveryOptions(eq("delivery"), isNull(), eq("us-east-1"));
+    }
+
+    @Test
+    void updateToAnAwsNoValueDeliveryOptionsClearsThem() throws Exception {
+        StackResource resource = configurationSetResource("delivery");
+        storedDeliveryOptions("delivery", "REQUIRE");
+
+        provisioner.provision(resource, props("""
+                {"Name": "delivery", "DeliveryOptions": {"Ref": "AWS::NoValue"}}
+                """), ProvisionContexts.standalone("delivery",
+                props("{\"Name\":\"delivery\",\"DeliveryOptions\":{\"TlsPolicy\":\"REQUIRE\"}}")));
+
+        verify(ses).setConfigurationSetDeliveryOptions(eq("delivery"), isNull(), eq("us-east-1"));
+    }
+
+    @Test
+    void updateOfAStackThatNeverDeclaredDeliveryOptionsLeavesThemAlone() throws Exception {
+        StackResource resource = configurationSetResource("delivery");
+        storedDeliveryOptions("delivery", "REQUIRE");
+
+        provisioner.provision(resource, props("{\"Name\":\"delivery\"}"), deliveryOptionsUpdateContext(null));
+
+        verify(ses, never()).setConfigurationSetDeliveryOptions(any(), any(), any());
+        verify(configurationSets, never()).get(any(), any());
+    }
+
+    @Test
+    void rollbackPutsBackTheDeliveryOptionsAnInPlaceUpdateReplaced() throws Exception {
+        StackResource resource = configurationSetResource("delivery");
+        storedDeliveryOptions("delivery", "REQUIRE");
+        provisioner.provision(resource, props("""
+                {"Name": "delivery", "DeliveryOptions": {"TlsPolicy": "OPTIONAL"}}
+                """), deliveryOptionsUpdateContext("REQUIRE"));
+
+        assertTrue(provisioner.rollbackUpdate(resource));
+
+        verify(ses).setConfigurationSetDeliveryOptions(eq("delivery"),
+                argThat(options -> options != null && "REQUIRE".equals(options.getTlsPolicy())), eq("us-east-1"));
+        assertEquals("delivery", resource.getPhysicalId());
+        verify(ses, never()).deleteConfigurationSet(any(), any());
+    }
+
+    @Test
+    void rollbackOfAnUpdateThatAddedDeliveryOptionsClearsThem() throws Exception {
+        StackResource resource = configurationSetResource("delivery");
+        when(configurationSets.get("delivery", "us-east-1")).thenReturn(new ConfigurationSet("delivery"));
+        provisioner.provision(resource, props("""
+                {"Name": "delivery", "DeliveryOptions": {"TlsPolicy": "REQUIRE"}}
+                """), deliveryOptionsUpdateContext(null));
+
+        assertTrue(provisioner.rollbackUpdate(resource));
+
+        verify(ses).setConfigurationSetDeliveryOptions(eq("delivery"), isNull(), eq("us-east-1"));
+    }
+
+    @Test
+    void committedUpdateDropsTheDeliveryOptionsSnapshot() throws Exception {
+        StackResource resource = configurationSetResource("delivery");
+        storedDeliveryOptions("delivery", "REQUIRE");
+        provisioner.provision(resource, props("""
+                {"Name": "delivery", "DeliveryOptions": {"TlsPolicy": "OPTIONAL"}}
+                """), deliveryOptionsUpdateContext("REQUIRE"));
+
+        UpdateCleanupResult cleanup = provisioner.completeUpdate(resource);
+        assertTrue(cleanup.applicable());
+        assertTrue(cleanup.complete());
+        provisioner.clearUpdate(resource);
+
+        assertTrue(resource.getAttributes().keySet().stream().noneMatch(key -> key.startsWith("__FlociSes")));
+        assertTrue(provisioner.rollbackUpdate(resource));
+        verify(ses, times(1)).setConfigurationSetDeliveryOptions(any(), any(), any());
+    }
+
+    @Test
+    void failedDeliveryOptionsUpdateLeavesNoSnapshot() throws Exception {
+        StackResource resource = configurationSetResource("delivery");
+        storedDeliveryOptions("delivery", "REQUIRE");
+        doThrow(new AwsException("BadRequestException", "invalid", 400))
+                .when(ses).setConfigurationSetDeliveryOptions(eq("delivery"), any(), eq("us-east-1"));
+        JsonNode bogus = props("{\"Name\":\"delivery\",\"DeliveryOptions\":{\"TlsPolicy\":\"BOGUS\"}}");
+        ProvisionContext update = deliveryOptionsUpdateContext("REQUIRE");
+
+        AwsException failure = assertThrows(AwsException.class, () -> provisioner.provision(resource, bogus, update));
+
+        assertEquals("invalid", failure.getMessage());
+        assertFalse(provisioner.retainsFailedUpdateState(resource));
+        assertFalse(provisioner.completeUpdate(resource).applicable());
+    }
+
+    @Test
+    void unsupportedDeliveryOptionsMemberFailsBeforeCreation() throws Exception {
+        JsonNode properties = props("""
+                {"Name": "delivery", "DeliveryOptions": {"SharedPoolDeliveryMode": "SHARED_POOL"}}
+                """);
+
+        AwsException failure = assertThrows(AwsException.class,
+                () -> provisioner.provision(configurationSetResource(null), properties, context(null)));
+
+        assertEquals("ValidationError", failure.getErrorCode());
+        assertEquals("DeliveryOptions has unsupported property SharedPoolDeliveryMode.", failure.getMessage());
+        verify(ses, never()).createConfigurationSet(any(ConfigurationSet.class), any());
+    }
+
+    @Test
+    void deliveryOptionsOfTheWrongTypeAreRefusedAsTheSesV2ApiRefusesThem() throws Exception {
+        JsonNode properties = props("{\"Name\":\"delivery\",\"DeliveryOptions\":{\"TlsPolicy\":1}}");
+
+        AwsException failure = assertThrows(AwsException.class,
+                () -> provisioner.provision(configurationSetResource(null), properties, context(null)));
+
+        assertEquals("BadRequestException", failure.getErrorCode());
+        assertEquals("TlsPolicy must be a JSON string.", failure.getMessage());
+        verify(ses, never()).createConfigurationSet(any(ConfigurationSet.class), any());
+    }
+
+    @Test
     void blankExplicitNameFailsBeforeCreation() throws Exception {
         AwsException failure = assertThrows(AwsException.class, () -> provisioner.provision(
                 configurationSetResource(null), props("{\"Name\":\"\"}"), context(null)));
@@ -743,6 +942,20 @@ class SesCfnProvisionerTest {
         assertDoesNotThrow(() -> provisioner.delete("AWS::SES::ConfigurationSet", "gone", "us-east-1"));
         assertThrows(AwsException.class,
                 () -> provisioner.delete("AWS::SES::ConfigurationSet", "failed", "us-east-1"));
+    }
+
+    private void storedDeliveryOptions(String name, String tlsPolicy) {
+        ConfigurationSet stored = new ConfigurationSet(name);
+        DeliveryOptions options = new DeliveryOptions();
+        options.setTlsPolicy(tlsPolicy);
+        stored.setDeliveryOptions(options);
+        when(configurationSets.get(name, "us-east-1")).thenReturn(stored);
+    }
+
+    private ProvisionContext deliveryOptionsUpdateContext(String priorTlsPolicy) throws Exception {
+        String prior = priorTlsPolicy == null ? "{\"Name\":\"delivery\"}"
+                : "{\"Name\":\"delivery\",\"DeliveryOptions\":{\"TlsPolicy\":\"" + priorTlsPolicy + "\"}}";
+        return configurationSetUpdateContext("delivery", props(prior));
     }
 
     private Identity domain(String name) {
