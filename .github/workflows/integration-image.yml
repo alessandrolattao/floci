@@ -12,13 +12,20 @@ on:
   push:
     tags:
       - 'int-*'
-  # A tag on a commit that carries [skip ci] starts nothing when it is pushed: fork/round.sh then
-  # dispatches this workflow on the tag. A dispatch on any other ref publishes nothing.
+  # A tag on a commit that carries [skip ci] starts nothing when it is pushed, and a tag whose run
+  # failed has no image: fork/round.sh then dispatches this workflow on the tag. A dispatch on any
+  # other ref publishes nothing.
   workflow_dispatch:
 
 permissions:
   contents: read
   packages: write
+
+# A tag's push and a dispatch on it can both start a run: the runs go one at a time, so the later
+# one finds the tag published.
+concurrency:
+  group: floci-images
+  cancel-in-progress: false
 
 env:
   IMAGE: ghcr.io/alessandrolattao/floci:${{ github.ref_name }}
