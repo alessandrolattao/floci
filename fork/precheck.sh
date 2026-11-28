@@ -65,10 +65,12 @@ trimmed() {
 # diff_lines <pathspec>...: every line the branch changes, as <sign>:<path>:<line>:<text>. An added
 # line has the sign + and its path and number in HEAD; a removed one has - and its path and number
 # in the merge base. A renamed or moved file counts only its changed lines, as git diff
-# upstream/main...HEAD shows it.
+# upstream/main...HEAD shows it. --inter-hunk-context=0 overrides diff.interHunkContext, which would
+# fuse hunks around context lines; a context line that still comes (blank under
+# diff.suppressBlankEmpty) moves both numbers on.
 diff_lines() {
     git -c core.quotePath=false diff --no-color --no-ext-diff --find-renames \
-        --src-prefix=a/ --dst-prefix=b/ -U0 "$base" HEAD -- "$@" |
+        --src-prefix=a/ --dst-prefix=b/ -U0 --inter-hunk-context=0 "$base" HEAD -- "$@" |
         awk '
             /^diff --git / { header = 1; next }
             header && /^--- / { old = substr($0, 7); next }
@@ -82,6 +84,7 @@ diff_lines() {
             header { next }
             /^\+/ { print "+:" new ":" added++ ":" substr($0, 2); next }
             /^-/ { print "-:" old ":" removed++ ":" substr($0, 2); next }
+            /^ / || /^$/ { added++; removed++ }
         '
 }
 
