@@ -271,6 +271,8 @@ class EmbeddedDnsServerTest {
     private static final String MY_IP = "172.31.0.2";
     private static final String ACCOUNT = "000000000000";
     private static final String REGION = "us-east-1";
+    private static final DnsRecord.Soa ZONE_SOA =
+            new DnsRecord.Soa("ns-2048.awsdns-64.com. awsdns-hostmaster.amazon.com. 1 7200 900 1209600 86400");
 
     @Test
     void forwardingRuleMatchesOnlyItsDomainAndTheSubdomainsBeneathIt() {
@@ -458,7 +460,8 @@ class EmbeddedDnsServerTest {
 
     @Test
     void planQuery_missingPublicNamesDoNotShadowEmulatorEndpoints() {
-        EmbeddedDnsServer dns = withRules(List.of(publicZone((name, type) -> DnsAnswer.nxDomain())),
+        DnsAnswer zoneNxDomain = fromZone("localhost.floci.io", DnsAnswer.nxDomain());
+        EmbeddedDnsServer dns = withRules(List.of(publicZone((name, type) -> zoneNxDomain)),
                 rules("vpc-a", forward("rule.localhost.floci.io", "10.1.0.53")), clientVpc("vpc-a"));
 
         for (String name : List.of("cluster.dsql.us-east-1.localhost.floci.io",
@@ -466,21 +469,34 @@ class EmbeddedDnsServerTest {
             assertEquals(List.of(MY_IP), dns.planQuery(name, CLIENT, MY_IP, 1).answer().orElseThrow().addresses());
             assertEquals(DnsAnswer.noData(), dns.planQuery(name, CLIENT, MY_IP, 28).answer().orElseThrow());
             for (int type : List.of(2, 6, 16)) {
-                assertEquals(DnsAnswer.nxDomain(), dns.planQuery(name, CLIENT, MY_IP, type).answer().orElseThrow());
+                assertEquals(zoneNxDomain, dns.planQuery(name, CLIENT, MY_IP, type).answer().orElseThrow());
             }
-            assertEquals(DnsAnswer.nxDomain(),
+            assertEquals(zoneNxDomain,
                     dns.planQuery(name, CLIENT, MY_IP, 1, false).answer().orElseThrow());
         }
-        assertEquals(DnsAnswer.nxDomain(),
+        assertEquals(zoneNxDomain,
                 dns.planQuery("missing.example.test", CLIENT, MY_IP, 1).answer().orElseThrow());
         assertEquals(List.of(new DnsForwardingRule.Target("10.1.0.53", 53)),
                 dns.planQuery("api.rule.localhost.floci.io", CLIENT, MY_IP, 1).ruleTargets());
     }
 
     @Test
+    void planQuery_keepsTheNxDomainOfAZoneNotNamedLikeASuffix() {
+        for (String zone : List.of("dns.localhost.floci.io", "floci.io")) {
+            DnsAnswer missing = fromZone(zone, DnsAnswer.nxDomain());
+            EmbeddedDnsServer dns = new EmbeddedDnsServer(List.of("localhost.floci.io"),
+                    List.of(publicZone((name, type) -> missing)));
+
+            for (int type : List.of(1, 28)) {
+                assertEquals(missing, dns.planQuery("missing.dns.localhost.floci.io", CLIENT, MY_IP, type)
+                        .answer().orElseThrow(), zone);
+            }
+        }
+    }
+
+    @Test
     void planQuery_answersFlocisOwnHostnameWhenItsPublicZoneHoldsNoAddressThere() {
-        DnsAnswer zoneNoData = DnsAnswer.noData().withAuthority("localhost.floci.io",
-                new DnsRecord.Soa("ns-2048.awsdns-64.com. awsdns-hostmaster.amazon.com. 1 7200 900 1209600 86400"), 900);
+        DnsAnswer zoneNoData = fromZone("localhost.floci.io", DnsAnswer.noData());
         DnsAnswer apexText = DnsAnswer.typedRecords(List.of(new DnsRecord.Txt("\"v=spf1 -all\"")), 300);
         DnsRecordSource zone = publicZone((name, type) -> switch (name.toLowerCase(Locale.ROOT)) {
             case "localhost.floci.io" -> type == 16 ? apexText : zoneNoData;
@@ -527,6 +543,11 @@ class EmbeddedDnsServerTest {
                                                DnsClientVpcSource clientVpcSource) {
         return new EmbeddedDnsServer(List.of("localhost.floci.io"), recordSources,
                 List.of(ruleSource), List.of(clientVpcSource));
+    }
+
+    /** {@code answer} as the public zone {@code zone} gives it: with its SOA, and its name as Route 53 stores it. */
+    private static DnsAnswer fromZone(String zone, DnsAnswer answer) {
+        return answer.withAuthority(zone + ".", ZONE_SOA, 900);
     }
 
     /** A public zone that answers every authoritative query with what {@code answer} gives for its name and type. */

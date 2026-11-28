@@ -441,10 +441,11 @@ public class EmbeddedDnsServer {
      * <p>A forwarding rule associated with the querying VPC is then applied before Floci resolves
      * the name from a record source, because a Resolver rule takes precedence over a private
      * hosted zone that matches the same name. An address query under an emulator suffix that the
-     * stored zone does not contain or refuses, such as an alias to a target Floci does not serve,
-     * or one for a suffix itself (Floci's own hostname) that the zone holds no address for, is then
-     * answered as the emulator's own name, unless the packet has a shape the zone refuses on its
-     * own: more than one question, a class other than IN, or a non-standard opcode or flag.
+     * stored zone refuses, such as an alias to a target Floci does not serve, that a zone named
+     * like the suffix does not contain, or for a suffix itself (Floci's own hostname) that the zone
+     * holds no address for, is then answered as the emulator's own name, unless the packet has a
+     * shape the zone refuses on its own: more than one question, a class other than IN, or a
+     * non-standard opcode or flag.
      */
     QueryPlan planQuery(String name, String clientAddress, String myIp, int type, boolean standardQuery) {
         ClientOrigin clientOrigin = originForClient(clientAddress);
@@ -472,17 +473,23 @@ public class EmbeddedDnsServer {
     }
 
     /**
-     * Whether the emulator's own name replaces a stored address answer under its suffixes: an
-     * absent name, a refusal, or no address at a suffix itself, the hostname every container
-     * Floci launches calls it on.
+     * Whether the emulator's own name replaces a stored address answer under its suffixes: a
+     * refusal, an absent name in a zone named like a suffix, or no address at a suffix itself, the
+     * hostname every container Floci launches calls it on. A zone below a suffix keeps its NXDOMAIN.
      */
     private boolean yieldsToEmulatorName(String name, DnsAnswer answer) {
-        return answer.responseCode() == 3 || answer.responseCode() == 5
-                || (answer.responseCode() == 0 && answer.isEmpty() && isSuffix(name));
+        return switch (answer.responseCode()) {
+            case 5 -> true;
+            case 3 -> answer.authority() != null && isSuffix(answer.authority().name());
+            case 0 -> answer.isEmpty() && isSuffix(name);
+            default -> false;
+        };
     }
 
+    /** Whether {@code name}, with or without its final dot, is one of the suffixes itself. */
     private boolean isSuffix(String name) {
-        return suffixes.stream().anyMatch(suffix -> suffix.equalsIgnoreCase(name));
+        String bare = DnsLookupHelper.normalizeTarget(name);
+        return suffixes.stream().anyMatch(suffix -> suffix.equalsIgnoreCase(bare));
     }
 
     private Optional<DnsAnswer> resolveEmulatorName(String name, String myIp, int type) {
