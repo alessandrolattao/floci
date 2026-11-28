@@ -6,11 +6,12 @@
 #   fork/round.sh
 #
 # Runs in a clone where origin is alessandrolattao/floci and upstream is floci-io/floci, with gh
-# logged in and local-tools/shards.sh in place. A merge conflict or a red suite stops the round
-# before integration or the tag is pushed.
+# logged in and Docker running (fork/suite.sh runs the suite in a container). A merge conflict or a
+# red suite stops the round before integration or the tag is pushed.
 set -euo pipefail
 
 readonly FORK=alessandrolattao/floci
+readonly IMAGE=ghcr.io/alessandrolattao/floci
 readonly LABEL=integration
 # The fork's own workflows. Every other workflow on the fork is upstream's, and stays disabled.
 readonly OWN_WORKFLOWS=(.github/workflows/integration-image.yml)
@@ -42,12 +43,38 @@ disable_upstream_workflows() {
     done <<<"$listed"
 }
 
-# skips_push <commit>: succeeds when <commit>'s message carries one of the strings GitHub's
-# "Skipping workflow runs" lists, which keep a push from starting workflows, a tag's push included.
+# skips_push <commit>: succeeds when <commit>'s message keeps a push from starting workflows, a
+# tag's push included, as GitHub's "Skipping workflow runs" describes it: one of its strings
+# anywhere, or a skip-checks trailer that is the last trailer of a trailers section preceded by
+# two empty lines.
 skips_push() {
-    local message
+    local message trailer=$'\n\n\n([^\n]+\n)*skip-checks: ?true$'
     message=$(git log -1 --format=%B "$1")
-    grep -qE '\[(skip ci|ci skip|no ci|skip actions|actions skip)\]|^skip-checks: ?true$' <<<"$message"
+    grep -qE '\[(skip ci|ci skip|no ci|skip actions|actions skip)\]' <<<"$message" || [[ $message =~ $trailer ]]
+}
+
+# image_published <tag>: succeeds when ghcr.io carries the image of <tag>, looked up as the image
+# workflow looks it up.
+image_published() {
+    docker buildx imagetools inspect "$IMAGE:$1" >/dev/null 2>&1
+}
+
+# start_image <tag>: starts the image workflow on <tag>, for a tag whose push started nothing.
+start_image() {
+    gh workflow run integration-image.yml --repo "$FORK" --ref "$1" ||
+        die "$1 is pushed but its image did not start: gh workflow run integration-image.yml --repo $FORK --ref $1"
+}
+
+# contained <commit> <ref>...: succeeds when one of <ref> already contains <commit>.
+contained() {
+    local commit=$1 ref
+    shift
+    for ref in "$@"; do
+        if git merge-base --is-ancestor "$commit" "$ref"; then
+            return 0
+        fi
+    done
+    return 1
 }
 
 # merges_now <ref> <main> <head>...: succeeds when <ref> is <main> with each <head> merged on top
@@ -66,7 +93,6 @@ merges_now() {
 
 round() {
     cd "$(git rev-parse --show-toplevel)"
-    [ -x local-tools/shards.sh ] || die "local-tools/shards.sh is missing: the round cannot run the suite"
     git diff --quiet HEAD -- || die "the checkout has uncommitted changes"
 
     git fetch upstream
@@ -84,16 +110,25 @@ round() {
     git push origin main
     disable_upstream_workflows
 
-    local listed entries entry numbers=() heads=() i
+    # A head that main or a lower-numbered pending fix already contains gives no merge commit: it
+    # is left out, so the integration a round builds and the one it compares with stay the same.
+    local listed entries entry number head listed_heads=() numbers=() heads=() i
     listed=$(gh pr list --repo "$FORK" --base main --label "$LABEL" --state open --limit 100 \
         --json number,headRefOid --jq 'sort_by(.number) | .[] | "\(.number) \(.headRefOid)"')
     mapfile -t entries <<<"$listed"
     for entry in "${entries[@]}"; do
         [ -n "$entry" ] || continue
-        numbers+=("${entry% *}")
-        heads+=("${entry#* }")
-        git fetch origin "refs/pull/${entry% *}/head"
-        [ "$(git rev-parse FETCH_HEAD)" = "${entry#* }" ] || die "#${entry% *} moved while the round read it: run it again"
+        number=${entry% *}
+        head=${entry#* }
+        git fetch origin "refs/pull/$number/head"
+        [ "$(git rev-parse FETCH_HEAD)" = "$head" ] || die "#$number moved while the round read it: run it again"
+        if contained "$head" main "${listed_heads[@]}"; then
+            echo "round: #$number ($head) is already in main or an earlier pending fix: nothing to merge"
+        else
+            numbers+=("$number")
+            heads+=("$head")
+        fi
+        listed_heads+=("$head")
     done
 
     if merges_now "refs/remotes/origin/$LABEL" main "${heads[@]}"; then
@@ -112,18 +147,24 @@ round() {
 
     local commit tag published tagged lease
     commit=$(git rev-parse HEAD)
-    tag="int-$(git rev-parse --short HEAD)"
+    # A fixed length: --short alone grows with the clone's object count, and so would the tag.
+    tag="int-$(git rev-parse --short=12 HEAD)"
     lease=$(git rev-parse -q --verify "refs/remotes/origin/$LABEL" || true)
 
     published=$(git ls-remote --tags origin "refs/tags/$tag" "refs/tags/$tag^{}" | awk '{ print $1 }' | tail -1)
     if [ -n "$published" ]; then
         [ "$published" = "$commit" ] || die "$tag on origin names $published, not $commit"
         git push --force-with-lease="refs/heads/$LABEL:$lease" origin "$LABEL"
-        echo "round: $tag is already on origin: its suite passed, nothing to publish"
+        if image_published "$tag"; then
+            echo "round: $tag and its image are already published: its suite passed, nothing to publish"
+        else
+            start_image "$tag"
+            echo "round: $tag is already on origin but its image is not published: image started with a dispatch"
+        fi
         return 0
     fi
 
-    local-tools/shards.sh "$PWD" || die "the suite failed on $commit: nothing pushed but main"
+    fork/suite.sh || die "the suite failed on $commit (logs in target/suite): nothing pushed but main"
 
     tagged=$(git rev-parse -q --verify "refs/tags/$tag^{commit}" || true)
     if [ -z "$tagged" ]; then
@@ -135,8 +176,7 @@ round() {
     git push --force-with-lease="refs/heads/$LABEL:$lease" origin "$LABEL"
     git push origin "refs/tags/$tag"
     if skips_push "$commit"; then
-        gh workflow run integration-image.yml --repo "$FORK" --ref "$tag" ||
-            die "$tag is pushed but its image did not start: gh workflow run integration-image.yml --repo $FORK --ref $tag"
+        start_image "$tag"
         echo "round: $commit carries [skip ci], which skips the tag's push: image started with a dispatch"
     fi
     echo "round: $tag"
