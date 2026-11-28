@@ -36,7 +36,8 @@ public class SesCfnProvisioner implements CfnResourceProvisioner {
     private static final String UPDATE_SNAPSHOT_ATTR = "__FlociSesUpdateSnapshot";
     private static final String DELIVERY_OPTIONS_SNAPSHOT_ATTR = "__FlociSesDeliveryOptionsSnapshot";
     private static final String DELIVERY_OPTIONS = "DeliveryOptions";
-    private static final Set<String> DELIVERY_OPTION_KEYS = Set.of("TlsPolicy", "SendingPoolName", "MaxDeliverySeconds");
+    private static final String MAX_DELIVERY_SECONDS = "MaxDeliverySeconds";
+    private static final Set<String> DELIVERY_OPTION_KEYS = Set.of("TlsPolicy", "SendingPoolName", MAX_DELIVERY_SECONDS);
     private static final ObjectMapper MAPPER = new ObjectMapper().findAndRegisterModules();
     private final SesService sesService;
     private final SesIdentityService identityService;
@@ -154,8 +155,14 @@ public class SesCfnProvisioner implements CfnResourceProvisioner {
             throw invalid("Name must not be empty.");
         }
         JsonNode declaredDeliveryOptions = object(resolved, DELIVERY_OPTIONS, DELIVERY_OPTION_KEYS, ctx);
-        DeliveryOptions deliveryOptions = declaredDeliveryOptions == null
-                ? null : SesV2Json.parseDeliveryOptions(declaredDeliveryOptions);
+        DeliveryOptions deliveryOptions = null;
+        if (declaredDeliveryOptions != null) {
+            ObjectNode readable = declaredDeliveryOptions.deepCopy();
+            if (readable.has(MAX_DELIVERY_SECONDS)) {
+                readable.set(MAX_DELIVERY_SECONDS, CfnPropertyTypes.wholeNumberFromText(readable.get(MAX_DELIVERY_SECONDS)));
+            }
+            deliveryOptions = SesV2Json.parseDeliveryOptions(readable);
+        }
         boolean declaredReplacement = ctx.isUpdate()
                 && ctx.changes(CONFIGURATION_SET_TYPE, props).requiresReplacement();
         String name = declaredReplacement && explicitName == null

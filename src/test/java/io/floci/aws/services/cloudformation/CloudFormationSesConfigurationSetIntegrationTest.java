@@ -214,6 +214,28 @@ class CloudFormationSesConfigurationSetIntegrationTest {
     }
 
     @Test
+    void maxDeliverySecondsFromANumberParameterIsApplied() {
+        String setName = stackName + "-tls";
+        String template = """
+                {
+                  "Parameters": {"Seconds": {"Type": "Number"}},
+                  "Resources": {
+                    "ConfigurationSet": {
+                      "Type": "AWS::SES::ConfigurationSet",
+                      "Properties": {"Name": "%s", "DeliveryOptions": {"MaxDeliverySeconds": {"Ref": "Seconds"}}}
+                    }
+                  }
+                }
+                """.formatted(setName);
+
+        cfn.createStack(request -> request.stackName(stackName).templateBody(template)
+                .parameters(Parameter.builder().parameterKey("Seconds").parameterValue("900").build()));
+        CfnStackWaits.awaitStatus(cfn, stackName, "CREATE_COMPLETE");
+
+        assertEquals(900L, deliveryOptions(setName).maxDeliverySeconds());
+    }
+
+    @Test
     void invalidTlsPolicyFailsTheStackWithTheSesV2Validation() {
         String setName = stackName + "-tls";
         cfn.createStack(request -> request.stackName(stackName).templateBody(configurationSetTemplate("""

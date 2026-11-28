@@ -14,6 +14,7 @@ import io.floci.aws.core.common.RequestShapeModel.Shape;
 import io.floci.aws.services.cloudformation.CloudFormationTemplateEngine;
 
 import java.math.BigDecimal;
+import java.math.BigInteger;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -100,6 +101,18 @@ final class CfnPropertyTypes {
             throw templateMismatch(property, expected == JsonNodeType.OBJECT ? "JSONObject" : LIST,
                     containerName(value));
         }
+    }
+
+    /**
+     * A number property's resolved {@code value} with text that spells a whole number turned into
+     * that number: the engine resolves a {@code Ref} to a {@code Number} parameter to text. Any other
+     * value is returned as it is, for the reader that takes it to accept or refuse.
+     */
+    static JsonNode wholeNumberFromText(JsonNode value) {
+        if (value == null || !value.isTextual() || !WHOLE_NUMBER.matcher(value.textValue()).matches()) {
+            return value;
+        }
+        return JsonNodeFactory.instance.numberNode(new BigInteger(value.textValue()));
     }
 
     /**

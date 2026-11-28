@@ -747,6 +747,29 @@ class SesCfnProvisionerTest {
     }
 
     @Test
+    void maxDeliverySecondsWrittenAsWholeNumberTextIsReadAsThatNumber() throws Exception {
+        provisioner.provision(configurationSetResource(null), props("""
+                {"Name": "delivery", "DeliveryOptions": {"MaxDeliverySeconds": "600"}}
+                """), context(null));
+
+        verify(ses).createConfigurationSet(
+                argThat(set -> Long.valueOf(600).equals(set.getDeliveryOptions().getMaxDeliverySeconds())),
+                eq("us-east-1"));
+    }
+
+    @Test
+    void maxDeliverySecondsTextThatIsNoWholeNumberFailsAsTheSesV2ParseSays() throws Exception {
+        JsonNode properties = props("{\"Name\":\"delivery\",\"DeliveryOptions\":{\"MaxDeliverySeconds\":\"4.5\"}}");
+
+        AwsException failure = assertThrows(AwsException.class,
+                () -> provisioner.provision(configurationSetResource(null), properties, context(null)));
+
+        assertEquals("BadRequestException", failure.getErrorCode());
+        assertEquals("MaxDeliverySeconds must be a number.", failure.getMessage());
+        verify(ses, never()).createConfigurationSet(any(ConfigurationSet.class), any());
+    }
+
+    @Test
     void deliveryOptionsLeaveOutAnAwsNoValueMember() throws Exception {
         StackResource resource = configurationSetResource(null);
 
