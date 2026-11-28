@@ -14,10 +14,12 @@ import java.nio.ByteBuffer;
 import java.util.Arrays;
 import java.util.Comparator;
 import java.util.List;
+import java.util.Locale;
 import java.util.Optional;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.function.BiFunction;
 
 import static org.junit.jupiter.api.Assertions.*;
 
@@ -269,6 +271,8 @@ class EmbeddedDnsServerTest {
     private static final String MY_IP = "172.31.0.2";
     private static final String ACCOUNT = "000000000000";
     private static final String REGION = "us-east-1";
+    private static final DnsRecord.Soa ZONE_SOA =
+            new DnsRecord.Soa("ns-2048.awsdns-64.com. awsdns-hostmaster.amazon.com. 1 7200 900 1209600 86400");
 
     @Test
     void forwardingRuleMatchesOnlyItsDomainAndTheSubdomainsBeneathIt() {
@@ -437,18 +441,7 @@ class EmbeddedDnsServerTest {
 
     @Test
     void planQuery_answersAnOwnNameWhoseStoredAddressIsRefusedLikeAnyOtherOwnName() {
-        DnsRecordSource refusing = new DnsRecordSource() {
-            @Override
-            public Optional<DnsAnswer> resolveAuthoritative(String name, int type) {
-                return Optional.of(DnsAnswer.refused());
-            }
-
-            @Override
-            public Optional<DnsAnswer> resolveIpv4(String name) {
-                return Optional.empty();
-            }
-        };
-        EmbeddedDnsServer dns = withRules(List.of(refusing),
+        EmbeddedDnsServer dns = withRules(List.of(publicZone((name, type) -> DnsAnswer.refused())),
                 rules("vpc-a", forward("rule.localhost.floci.io", "10.1.0.53")), clientVpc("vpc-a"));
 
         assertEquals(List.of(MY_IP),
@@ -463,6 +456,73 @@ class EmbeddedDnsServerTest {
                 dns.planQuery("ip-172-16-128-9.ec2.internal", CLIENT, MY_IP, 1).answer().orElseThrow());
         assertEquals(List.of(new DnsForwardingRule.Target("10.1.0.53", 53)),
                 dns.planQuery("api.rule.localhost.floci.io", CLIENT, MY_IP, 1).ruleTargets());
+    }
+
+    @Test
+    void planQuery_missingPublicNamesDoNotShadowEmulatorEndpoints() {
+        DnsAnswer zoneNxDomain = fromZone("localhost.floci.io", DnsAnswer.nxDomain());
+        EmbeddedDnsServer dns = withRules(List.of(publicZone((name, type) -> zoneNxDomain)),
+                rules("vpc-a", forward("rule.localhost.floci.io", "10.1.0.53")), clientVpc("vpc-a"));
+
+        for (String name : List.of("cluster.dsql.us-east-1.localhost.floci.io",
+                "uploads.s3.localhost.floci.io", "sts.us-east-1.localhost.floci.io")) {
+            assertEquals(List.of(MY_IP), dns.planQuery(name, CLIENT, MY_IP, 1).answer().orElseThrow().addresses());
+            assertEquals(DnsAnswer.noData(), dns.planQuery(name, CLIENT, MY_IP, 28).answer().orElseThrow());
+            for (int type : List.of(2, 6, 16)) {
+                assertEquals(zoneNxDomain, dns.planQuery(name, CLIENT, MY_IP, type).answer().orElseThrow());
+            }
+            assertEquals(zoneNxDomain,
+                    dns.planQuery(name, CLIENT, MY_IP, 1, false).answer().orElseThrow());
+        }
+        assertEquals(zoneNxDomain,
+                dns.planQuery("missing.example.test", CLIENT, MY_IP, 1).answer().orElseThrow());
+        assertEquals(List.of(new DnsForwardingRule.Target("10.1.0.53", 53)),
+                dns.planQuery("api.rule.localhost.floci.io", CLIENT, MY_IP, 1).ruleTargets());
+    }
+
+    @Test
+    void planQuery_keepsTheNxDomainOfAZoneNotNamedLikeASuffix() {
+        for (String zone : List.of("dns.localhost.floci.io", "floci.io")) {
+            DnsAnswer missing = fromZone(zone, DnsAnswer.nxDomain());
+            EmbeddedDnsServer dns = new EmbeddedDnsServer(List.of("localhost.floci.io"),
+                    List.of(publicZone((name, type) -> missing)));
+
+            for (int type : List.of(1, 28)) {
+                assertEquals(missing, dns.planQuery("missing.dns.localhost.floci.io", CLIENT, MY_IP, type)
+                        .answer().orElseThrow(), zone);
+            }
+        }
+    }
+
+    @Test
+    void planQuery_answersFlocisOwnHostnameWhenItsPublicZoneHoldsNoAddressThere() {
+        DnsAnswer zoneNoData = fromZone("localhost.floci.io", DnsAnswer.noData());
+        DnsAnswer apexText = DnsAnswer.typedRecords(List.of(new DnsRecord.Txt("\"v=spf1 -all\"")), 300);
+        DnsRecordSource zone = publicZone((name, type) -> switch (name.toLowerCase(Locale.ROOT)) {
+            case "localhost.floci.io" -> type == 16 ? apexText : zoneNoData;
+            case "plain.localhost.floci.io" -> type == 1 ? answer("192.0.2.10") : zoneNoData;
+            case "empty.localhost.floci.io" -> zoneNoData;
+            default -> DnsAnswer.nxDomain();
+        });
+        EmbeddedDnsServer dns = new EmbeddedDnsServer(List.of("localhost.floci.io"), List.of(zone));
+
+        for (String name : List.of("localhost.floci.io", "LocalHost.Floci.IO")) {
+            assertEquals(List.of(MY_IP), dns.planQuery(name, CLIENT, MY_IP, 1).answer().orElseThrow().addresses());
+        }
+        assertEquals(DnsAnswer.noData(), dns.planQuery("localhost.floci.io", CLIENT, MY_IP, 28).answer().orElseThrow());
+        assertEquals(apexText, dns.planQuery("localhost.floci.io", CLIENT, MY_IP, 16).answer().orElseThrow());
+        assertEquals(zoneNoData, dns.planQuery("localhost.floci.io", CLIENT, MY_IP, 1, false).answer().orElseThrow());
+        assertEquals(List.of("192.0.2.10"),
+                dns.planQuery("plain.localhost.floci.io", CLIENT, MY_IP, 1).answer().orElseThrow().addresses());
+        for (String name : List.of("plain.localhost.floci.io", "empty.localhost.floci.io")) {
+            assertEquals(zoneNoData, dns.planQuery(name, CLIENT, MY_IP, 28).answer().orElseThrow());
+        }
+        assertEquals(zoneNoData, dns.planQuery("empty.localhost.floci.io", CLIENT, MY_IP, 1).answer().orElseThrow());
+
+        EmbeddedDnsServer addressed = new EmbeddedDnsServer(List.of("localhost.floci.io"),
+                List.of(publicZone((name, type) -> answer("192.0.2.20"))));
+        assertEquals(List.of("192.0.2.20"),
+                addressed.planQuery("localhost.floci.io", CLIENT, MY_IP, 1).answer().orElseThrow().addresses());
     }
 
     @Test
@@ -483,6 +543,26 @@ class EmbeddedDnsServerTest {
                                                DnsClientVpcSource clientVpcSource) {
         return new EmbeddedDnsServer(List.of("localhost.floci.io"), recordSources,
                 List.of(ruleSource), List.of(clientVpcSource));
+    }
+
+    /** {@code answer} as the public zone {@code zone} gives it: with its SOA, and its name as Route 53 stores it. */
+    private static DnsAnswer fromZone(String zone, DnsAnswer answer) {
+        return answer.withAuthority(zone + ".", ZONE_SOA, 900);
+    }
+
+    /** A public zone that answers every authoritative query with what {@code answer} gives for its name and type. */
+    private static DnsRecordSource publicZone(BiFunction<String, Integer, DnsAnswer> answer) {
+        return new DnsRecordSource() {
+            @Override
+            public Optional<DnsAnswer> resolveAuthoritative(String name, int type) {
+                return Optional.of(answer.apply(name, type));
+            }
+
+            @Override
+            public Optional<DnsAnswer> resolveIpv4(String name) {
+                return Optional.empty();
+            }
+        };
     }
 
     /** Returns the rules most specific first, as {@link DnsForwardingRuleSource} asks sources to. */

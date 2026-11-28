@@ -129,7 +129,8 @@ fi
 REGISTRY_IMAGE="$(test_image REGISTRY)"
 starts EcsImagePullDockerIntegrationTest && [ -n "$REGISTRY_IMAGE" ] && pull "$REGISTRY_IMAGE"
 PYTHON_ALPINE_IMAGE="$(test_image PYTHON_ALPINE)"
-starts ContainerCaBundleDockerIntegrationTest EcsCredentialsProxyDockerNightlyIntegrationTest SageMakerDockerNightlyIntegrationTest \
+starts ContainerCaBundleDockerIntegrationTest EmulatorSuffixPublicZoneDockerIntegrationTest \
+       EcsCredentialsProxyDockerNightlyIntegrationTest SageMakerDockerNightlyIntegrationTest \
     && [ -n "$PYTHON_ALPINE_IMAGE" ] && pull "$PYTHON_ALPINE_IMAGE"
 # DNS lifecycle guests use Python, including inherited protected/shared checks. Their network helpers build
 # from alpine:3.21 locally, so prefetch the base rather than pulling the locally built helper image.
