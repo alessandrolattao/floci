@@ -1,7 +1,11 @@
 package io.floci.aws.core.common.dns;
 
 import com.github.dockerjava.api.DockerClient;
+import io.floci.aws.config.EmulatorConfig;
+import io.floci.aws.config.TlsCertificateManager;
+import io.floci.aws.core.common.docker.ContainerReachableEndpoint;
 import io.floci.aws.core.common.docker.DockerBridgeAddress;
+import io.floci.aws.core.common.docker.DockerHostResolver;
 import io.floci.aws.services.lambda.launcher.ImageCacheService;
 import io.floci.aws.services.route53.Route53DnsRecordSource;
 import io.floci.aws.testing.AwsTestClients;
@@ -19,6 +23,7 @@ import software.amazon.awssdk.services.route53.Route53Client;
 import software.amazon.awssdk.services.route53.model.ChangeAction;
 import software.amazon.awssdk.services.route53.model.RRType;
 
+import java.net.URI;
 import java.nio.ByteBuffer;
 import java.util.Arrays;
 import java.util.List;
@@ -34,7 +39,8 @@ import static org.junit.jupiter.api.Assumptions.assumeTrue;
 /**
  * A public hosted zone named like Floci's own suffix, as a CDK app whose local stage domain is
  * {@code localhost.floci.io} creates, leaves the names Floci serves under it resolvable from a
- * container, while the records the zone holds still answer.
+ * container, the suffix itself included, which is the host of the {@code AWS_ENDPOINT_URL} every
+ * container Floci launches calls it on, while the records the zone holds still answer.
  */
 @QuarkusTest
 class EmulatorSuffixPublicZoneDockerIntegrationTest {
@@ -54,6 +60,12 @@ class EmulatorSuffixPublicZoneDockerIntegrationTest {
     ImageCacheService images;
     @Inject
     Vertx vertx;
+    @Inject
+    EmulatorConfig config;
+    @Inject
+    DockerHostResolver dockerHost;
+    @Inject
+    TlsCertificateManager tlsCertificates;
 
     @RegisterExtension
     final PartitionCleanup cleanup = new PartitionCleanup();
@@ -78,28 +90,38 @@ class EmulatorSuffixPublicZoneDockerIntegrationTest {
                 .callerReference(UUID.randomUUID().toString())).hostedZone().id();
         cleanup.register(() -> route53.deleteHostedZone(request -> request.id(zone)));
         String plain = "plain." + SUFFIX;
-        changeAddress(route53, zone, ChangeAction.CREATE, plain);
-        cleanup.register(() -> changeAddress(route53, zone, ChangeAction.DELETE, plain));
+        createRecord(route53, zone, plain, RRType.A, "192.0.2.10");
+        createRecord(route53, zone, SUFFIX, RRType.TXT, "\"v=spf1 include:amazonses.com ~all\"");
+        createRecord(route53, zone, SUFFIX, RRType.MX, "10 inbound-smtp.us-east-1.amazonaws.com");
 
         EmbeddedDnsServer dns = new EmbeddedDnsServer(List.of(), List.of(records));
-        DatagramSocket socket = dns.bind(vertx, address, 0, false).toCompletionStage().toCompletableFuture()
+        DatagramSocket socket = dns.listen(vertx, address, 0).toCompletionStage().toCompletableFuture()
                 .get(10, TimeUnit.SECONDS);
         cleanup.register(() -> socket.close().toCompletionStage().toCompletableFuture()
                 .orTimeout(10, TimeUnit.SECONDS).join());
+        String endpointHost = URI.create(new ContainerReachableEndpoint(config, dockerHost, dns, tlsCertificates, 0)
+                .baseUrl()).getHost();
+        assertEquals(SUFFIX, endpointHost);
         String guest = startGuest();
         int port = socket.localAddress().port();
 
-        for (String name : List.of(dsqlEndpoint, "uploads.s3." + SUFFIX, "sts." + REGION + "." + SUFFIX)) {
+        for (String name : List.of(endpointHost, dsqlEndpoint, "uploads.s3." + SUFFIX,
+                "sts." + REGION + "." + SUFFIX)) {
             assertAddress(DnsTestQuery.queryGuest(docker, guest, name, address, port), address, name);
         }
         assertAddress(DnsTestQuery.queryGuest(docker, guest, plain, address, port), "192.0.2.10", plain);
     }
 
-    private static void changeAddress(Route53Client route53, String zone, ChangeAction action, String name) {
+    private void createRecord(Route53Client route53, String zone, String name, RRType type, String value) {
+        change(route53, zone, ChangeAction.CREATE, name, type, value);
+        cleanup.register(() -> change(route53, zone, ChangeAction.DELETE, name, type, value));
+    }
+
+    private static void change(Route53Client route53, String zone, ChangeAction action, String name, RRType type,
+                               String value) {
         route53.changeResourceRecordSets(request -> request.hostedZoneId(zone).changeBatch(batch -> batch
                 .changes(change -> change.action(action).resourceRecordSet(record -> record
-                        .name(name).type(RRType.A).ttl(60L)
-                        .resourceRecords(value -> value.value("192.0.2.10"))))));
+                        .name(name).type(type).ttl(60L).resourceRecords(resource -> resource.value(value))))));
     }
 
     private String startGuest() {

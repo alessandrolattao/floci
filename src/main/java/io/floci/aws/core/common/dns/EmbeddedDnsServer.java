@@ -441,9 +441,10 @@ public class EmbeddedDnsServer {
      * <p>A forwarding rule associated with the querying VPC is then applied before Floci resolves
      * the name from a record source, because a Resolver rule takes precedence over a private
      * hosted zone that matches the same name. An address query under an emulator suffix that the
-     * stored zone does not contain or refuses, such as an alias to a target Floci does not serve, is then answered as
-     * the emulator's own name, unless the packet has a shape the zone refuses on its own: more
-     * than one question, a class other than IN, or a non-standard opcode or flag.
+     * stored zone does not contain or refuses, such as an alias to a target Floci does not serve,
+     * or one for a suffix itself (Floci's own hostname) that the zone holds no address for, is then
+     * answered as the emulator's own name, unless the packet has a shape the zone refuses on its
+     * own: more than one question, a class other than IN, or a non-standard opcode or flag.
      */
     QueryPlan planQuery(String name, String clientAddress, String myIp, int type, boolean standardQuery) {
         ClientOrigin clientOrigin = originForClient(clientAddress);
@@ -463,11 +464,25 @@ public class EmbeddedDnsServer {
             return QueryPlan.forwardingTo(rule.orElseThrow().targets());
         }
         if (standardQuery && matchesSuffix(name) && (type == 1 || type == 28)
-                && stored.filter(answer -> answer.responseCode() == 3 || answer.responseCode() == 5).isPresent()) {
+                && stored.filter(answer -> yieldsToEmulatorName(name, answer)).isPresent()) {
             return QueryPlan.answering(emulatorName.orElseThrow());
         }
         return stored.or(() -> resolveFromRecordSources(name, type, false, myIp, origin))
                 .map(QueryPlan::answering).orElse(QueryPlan.UPSTREAM);
+    }
+
+    /**
+     * Whether the emulator's own name replaces a stored address answer under its suffixes: an
+     * absent name, a refusal, or no address at a suffix itself, the hostname every container
+     * Floci launches calls it on.
+     */
+    private boolean yieldsToEmulatorName(String name, DnsAnswer answer) {
+        return answer.responseCode() == 3 || answer.responseCode() == 5
+                || (answer.responseCode() == 0 && answer.isEmpty() && isSuffix(name));
+    }
+
+    private boolean isSuffix(String name) {
+        return suffixes.stream().anyMatch(suffix -> suffix.equalsIgnoreCase(name));
     }
 
     private Optional<DnsAnswer> resolveEmulatorName(String name, String myIp, int type) {
