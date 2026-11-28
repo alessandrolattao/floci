@@ -97,17 +97,28 @@ parse_entry() {
     text=${rest#*:}
 }
 
+# The status says whether the merge conflicts: git merge-tree can report a conflict that names no
+# file (a directory rename split), which only its CONFLICT message describes.
 check_conflicts() {
     section "1. Conflicts with $UPSTREAM"
-    local out status=0 file
-    out=$(git -c core.quotePath=false merge-tree --write-tree --name-only --no-messages "$UPSTREAM" HEAD) ||
-        status=$?
+    local out status=0 line reported=0
+    out=$(git -c core.quotePath=false merge-tree --write-tree --name-only "$UPSTREAM" HEAD) || status=$?
     case $status in
         0) note "none" ;;
         1)
-            while IFS= read -r file; do
-                problem "conflict: $file"
-            done < <(tail -n +2 <<<"$out" | awk 'NF && !seen[$0]++')
+            # The conflicted files run from the second line to the first blank one, the messages
+            # after it.
+            while IFS= read -r line; do
+                problem "conflict: $line"
+                reported=1
+            done < <(tail -n +2 <<<"$out" | awk 'NF == 0 { exit } !seen[$0]++')
+            if [ "$reported" -eq 0 ]; then
+                while IFS= read -r line; do
+                    problem "$line"
+                    reported=1
+                done < <(grep '^CONFLICT' <<<"$out" || true)
+            fi
+            [ "$reported" -eq 1 ] || problem "conflict: git merge-tree reports one and names no file"
             ;;
         *) die "git merge-tree could not merge $UPSTREAM and HEAD (status $status)" ;;
     esac
