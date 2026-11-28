@@ -184,6 +184,7 @@ check_removed_symbols() {
         elif [ "$kind" = type ]; then
             paths=('*.java')
         else
+            # The class by its name in the merge base and on upstream/main, which renames it with its file.
             class=$(basename "$origin" .java)
             package=$(dirname "$home")
             case $package in
@@ -192,7 +193,8 @@ check_removed_symbols() {
             paths=(":(literal)$home" ":(glob)$package/*.java")
             while IFS= read -r hit; do
                 paths+=(":(literal)${hit#"$UPSTREAM:"}")
-            done < <(git -c core.quotePath=false grep --no-color -l -w -F -e "$class" "$UPSTREAM" -- '*.java' || true)
+            done < <(git -c core.quotePath=false grep --no-color -l -w -F -e "$class" -e "$(basename "$home" .java)" \
+                "$UPSTREAM" -- '*.java' || true)
         fi
 
         candidates=()
