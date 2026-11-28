@@ -151,15 +151,15 @@ declaration() {
 
 # Symbols the branch removes or renames: a name a removed line declares and no added line declares.
 # Each is looked for on upstream/main where Java lets it be used: a private member, a private nested
-# type included, in its own file; any other type in every file; any other member in its own file,
-# its package's files and the files that name its class. Only a use upstream/main added after the
-# merge base is reported: a line the merge base's version of the same file already has, followed
-# through the files upstream/main renamed and counted per file and text, is dropped (the branch's
-# own removals among them). A caller the branch leaves in place is in HEAD, where the compile
-# reports it.
+# type included, in its own file; any other type in every file; any other member in its own file
+# and the files that name its class, as a package-mate's use does too. Only a use upstream/main
+# added after the merge base is reported: a line the merge base's version of the same file already
+# has, followed through the files upstream/main renamed and counted per file and text, is dropped
+# (the branch's own removals among them). A caller the branch leaves in place is in HEAD, where the
+# compile reports it.
 check_removed_symbols() {
     section "1. Symbols the branch removes that $UPSTREAM started using after the merge base"
-    local entry sign path line text kind name private symbol origin home class package key hit
+    local entry sign path line text kind name private symbol origin home class key hit
     local status old new found=0
     local -A declared=() symbols=() renamed_to=() renamed_from=() hit_paths=() before=()
     local patterns=() paths=() base_paths=() candidates=() hits=()
@@ -198,13 +198,10 @@ check_removed_symbols() {
         elif [ "$kind" = type ]; then
             paths=('*.java')
         else
-            # The class by its name in the merge base and on upstream/main, which renames it with its file.
+            # The class by its name in the merge base and on upstream/main, which renames it with
+            # its file.
             class=$(basename "$origin" .java)
-            package=$(dirname "$home")
-            case $package in
-                */java/*) package="**/java/${package#*/java/}" ;;
-            esac
-            paths=(":(literal)$home" ":(glob)$package/*.java")
+            paths=(":(literal)$home")
             while IFS= read -r hit; do
                 paths+=(":(literal)${hit#"$UPSTREAM:"}")
             done < <(git -c core.quotePath=false grep --no-color -l -w -F -e "$class" -e "$(basename "$home" .java)" \
